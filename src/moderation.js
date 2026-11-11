@@ -11,6 +11,7 @@ import { notifyCase } from './discord.js';
 import { fail, json, readJson } from './lib/http.js';
 import { cleanText, decodeCursor, encodeCursor, HANDLE_RE, newId, requireId } from './lib/util.js';
 import { animationKey, mediaKey, previewKey, releaseStorageStatement } from './storage.js';
+import { notifyStatement, publishedNotifications } from './notifications.js';
 import { mediaUrl } from './views.js';
 
 export const TAB_SQL = {
@@ -66,12 +67,14 @@ function firstMessage(findings, fallback) {
   return worst && worst.message ? worst.message : fallback;
 }
 
-function publishStatements(c, id) {
+// `row` is the animation as it was before publishing (its published_at tells whether this is the first time).
+function publishStatements(c, row) {
   return [
     c.env.DB.prepare(
       `UPDATE animations SET status = 'published', status_reason = '', published_at = COALESCE(published_at, ?), updated_at = ?
        WHERE id = ?`,
-    ).bind(c.now, c.now, id),
+    ).bind(c.now, c.now, row.id),
+    ...publishedNotifications(c, row),
   ];
 }
 
@@ -132,6 +135,7 @@ export async function applyAnimationVerdict(c, id, result) {
         .bind(firstMessage(result.findings, 'Rejected by automatic checks'), c.now, id),
       releaseStorageStatement(c.env, row.size_bytes),
       logAction(c, { targetType: 'animation', targetId: id, action: 'auto_reject', reason: firstMessage(result.findings, '') }),
+      notifyStatement(c, { userId: row.owner_id, kind: 'refused', animationId: id, reason: firstMessage(result.findings, '') }),
     ]);
     await deleteAnimationFiles(c, row);
     return;
@@ -139,7 +143,7 @@ export async function applyAnimationVerdict(c, id, result) {
 
   const owner = await db.prepare('SELECT * FROM users WHERE id = ?').bind(row.owner_id).first();
   if (result.verdict === 'clean' && owner && trustedUploader(owner)) {
-    await db.batch([...publishStatements(c, id), logAction(c, { targetType: 'animation', targetId: id, action: 'auto_publish' })]);
+    await db.batch([...publishStatements(c, row), logAction(c, { targetType: 'animation', targetId: id, action: 'auto_publish' })]);
     return;
   }
   const findings = result.verdict === 'clean'
@@ -233,7 +237,7 @@ export async function performCaseAction(c, caseRow, actor, source, action, reaso
     if (action === 'approve') {
       const owner = await db.prepare('SELECT * FROM users WHERE id = ?').bind(row.owner_id).first();
       const statements = [closeCase, log];
-      if (['review', 'hidden', 'scanning'].includes(row.status)) statements.unshift(...publishStatements(c, row.id));
+      if (['review', 'hidden', 'scanning'].includes(row.status)) statements.unshift(...publishStatements(c, row));
       // Approving an upload earns trust, once the GitHub account is old enough.
       if (owner && owner.trust === 0 && c.now - owner.github_created_at >= NEW_ACCOUNT_DAYS * 86400000) {
         statements.push(db.prepare('UPDATE users SET trust = 1 WHERE id = ?').bind(owner.id));
@@ -252,6 +256,7 @@ export async function performCaseAction(c, caseRow, actor, source, action, reaso
         db.prepare("UPDATE animations SET status = 'rejected', status_reason = ?, has_preview = 0, updated_at = ? WHERE id = ?")
           .bind(reason || 'Removed by a moderator', c.now, row.id),
         releaseStorageStatement(c.env, row.status === 'rejected' ? 0 : row.size_bytes),
+        notifyStatement(c, { userId: row.owner_id, kind: 'refused', animationId: row.id, reason: reason || '' }),
         closeCase,
         log,
       ]);

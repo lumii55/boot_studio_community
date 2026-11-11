@@ -6,6 +6,7 @@ import { fail, json, readBytes, readJson } from './lib/http.js';
 import { sniffImage } from './lib/images.js';
 import { rateLimit } from './lib/ratelimit.js';
 import { cleanLinks, cleanText, decodeCursor, encodeCursor, HANDLE_RE, newId, requireId } from './lib/util.js';
+import { notifyStatement } from './notifications.js';
 import { queueJob } from './pipeline.js';
 import { animationKey, mediaKey, previewKey, releaseStorageStatement, reserveStorage } from './storage.js';
 import { animationCard, OWNER_COLUMNS, ownProfile, publicProfile, userCard } from './views.js';
@@ -208,7 +209,14 @@ export async function follow(c) {
   const statement = c.request.method === 'PUT'
     ? db.prepare('INSERT OR IGNORE INTO follows (follower_id, followee_id, created_at) VALUES (?, ?, ?)').bind(viewer.id, target.id, c.now)
     : db.prepare('DELETE FROM follows WHERE follower_id = ? AND followee_id = ?').bind(viewer.id, target.id);
-  await db.batch([statement, ...followCountStatements(db, [viewer.id, target.id])]);
+  const [changed] = await db.batch([statement, ...followCountStatements(db, [viewer.id, target.id])]);
+  if (c.request.method === 'PUT' && changed.meta && changed.meta.changes === 1) {
+    // One "followed you" per person: following again after unfollowing replaces the old notice.
+    await db.batch([
+      db.prepare("DELETE FROM notifications WHERE user_id = ? AND actor_id = ? AND kind = 'follow'").bind(target.id, viewer.id),
+      notifyStatement(c, { userId: target.id, kind: 'follow', actorId: viewer.id }),
+    ]);
+  }
   const fresh = await db.prepare('SELECT followers_count FROM users WHERE id = ?').bind(target.id).first();
   return json({ following: c.request.method === 'PUT', followers: fresh.followers_count });
 }

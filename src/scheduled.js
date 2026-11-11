@@ -16,6 +16,7 @@ export async function runScheduled(c) {
     db.prepare('DELETE FROM rate_windows WHERE window_start < ?').bind(c.now - 2 * 86400000),
     db.prepare('DELETE FROM download_marks WHERE day < ?').bind(today - 1),
     db.prepare('DELETE FROM animation_daily WHERE day < ?').bind(today - 60),
+    db.prepare('DELETE FROM notifications WHERE created_at < ?').bind(c.now - 60 * 86400000),
     // Drafts whose file never arrived (nothing was stored for them).
     db.prepare("DELETE FROM animations WHERE status = 'draft' AND created_at < ?").bind(c.now - DRAFT_TTL_MS),
     // Trending: downloads of the last week, newer days weigh more, plus a small rating component.

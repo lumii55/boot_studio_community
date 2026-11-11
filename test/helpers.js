@@ -1,13 +1,16 @@
 // Test harness: the real Worker code against an in-memory D1 (node:sqlite), an in-memory R2 and a fake
 // network (GitHub, Turnstile, Discord, GitHub OIDC keys). No Cloudflare tooling needed.
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { handle, makeContext } from '../src/index.js';
 import { resetJwksCache } from '../src/lib/oidc.js';
 import { runScheduled } from '../src/scheduled.js';
 
-const SCHEMA = readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8');
+// Every migration, in order — the same sequence `wrangler d1 migrations apply` runs.
+const MIGRATIONS = new URL('../migrations/', import.meta.url);
+const SCHEMA = readdirSync(MIGRATIONS).filter((name) => name.endsWith('.sql')).sort()
+  .map((name) => readFileSync(new URL(name, MIGRATIONS), 'utf8')).join('\n');
 
 // --- D1 -----------------------------------------------------------------------------------------
 

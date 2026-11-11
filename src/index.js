@@ -7,6 +7,7 @@ import { interactions } from './discord.js';
 import { corsHeaders, errorResponse, fail, json, withHeaders } from './lib/http.js';
 import { Router } from './lib/router.js';
 import * as moderation from './moderation.js';
+import * as notifications from './notifications.js';
 import * as pipeline from './pipeline.js';
 import { createReport } from './reports.js';
 import { runScheduled } from './scheduled.js';
@@ -53,6 +54,9 @@ export const router = new Router()
   .on('PATCH', '/v1/me', users.updateProfile)
   .on('DELETE', '/v1/me', users.deleteAccount)
   .on('GET', '/v1/me/animations', animations.mine)
+  .on('GET', '/v1/me/notifications', notifications.list)
+  .on('GET', '/v1/me/notifications/unread', notifications.unread)
+  .on('POST', '/v1/me/notifications/read', notifications.markRead)
   .on('PUT', '/v1/me/:kind', users.uploadMedia)
   .on('DELETE', '/v1/me/:kind', users.deleteMedia)
   // profiles
