@@ -1,0 +1,46 @@
+# Manual only: Actions → deploy → Run workflow. Applies D1 migrations, deploys the Worker and syncs its secrets.
+name: deploy
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+env:
+  WRANGLER: npx --yes wrangler@4.160.1
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Tests
+        run: node --test --test-concurrency=1 'test/*.test.js'
+      - name: Configuration is complete
+        run: |
+          if grep -n 'TODO' wrangler.jsonc; then echo "::error::wrangler.jsonc still has TODO values"; exit 1; fi
+      - name: Apply database migrations
+        run: $WRANGLER d1 migrations apply bas-community --remote
+      - name: Deploy the Worker
+        run: $WRANGLER deploy
+      - name: Sync secrets
+        env:
+          GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
+          TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
+          GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: |
+          for name in GH_OAUTH_CLIENT_SECRET TURNSTILE_SECRET GH_DISPATCH_TOKEN DISCORD_BOT_TOKEN; do
+            if [ -z "${!name}" ]; then echo "::error::secret $name is missing"; exit 1; fi
+            printf '%s' "${!name}" | $WRANGLER secret put "$name" >/dev/null
+            echo "synced $name"
+          done
+      - name: Health check
+        run: |
+          url=$(grep -o '"PUBLIC_URL": *"[^"]*"' wrangler.jsonc | sed 's/.*"\(https[^"]*\)"/\1/')
+          curl -fsS "$url/v1/health"

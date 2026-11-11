@@ -1,0 +1,2 @@
+# Image checks (pipeline/vision.py). torch comes from the CPU-only index (see .github/workflows/moderation.yml).
+transformers==4.53.2

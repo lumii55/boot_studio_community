@@ -1,0 +1,42 @@
+# Started by the Worker for every upload / profile change. Talks back to the Worker with this run's OIDC token.
+name: moderation
+run-name: moderation ${{ inputs.job_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Pipeline job id
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: moderation-${{ inputs.job_id }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pipeline/requirements.txt
+            pipeline/requirements-vision.txt
+      - run: pip install -r pipeline/requirements.txt
+      - name: Image model (CPU)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.7.1
+          pip install -r pipeline/requirements-vision.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: vision-clip-3d74acf9-nsfw-96cb0d03
+      - name: Run checks
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+        run: python -I pipeline/run_job.py

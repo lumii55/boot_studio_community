@@ -1,0 +1,9 @@
+{
+  "name": "bas-community",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 'test/*.test.js'"
+  },
+  "engines": { "node": ">=22.5" }
+}

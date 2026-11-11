@@ -1,0 +1,35 @@
+{
+  // Boot Animation Studio community API. Deployed only by .github/workflows/deploy.yml.
+  // Public IDs only; secrets are never in this file.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bas-community",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bas-community",
+      "database_id": "6f5e3513-6426-41d0-bcc4-f4f5478f1e03",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "bas-community" }],
+  "vars": {
+    "PUBLIC_URL": "https://bas-community.bootanimstudio.workers.dev",
+    "SITE_URL": "https://lumii55.github.io/boot_animation_studio/",
+    "ALLOWED_ORIGINS": "https://lumii55.github.io",
+    "OWNER_GITHUB_ID": "109257859",
+    "OWNER_DISCORD_ID": "1442186243000500355",
+    "MODERATION_REPO": "lumii55/boot_studio_community",
+    "GH_OAUTH_CLIENT_ID": "Ov23li1G26rQ8FiqhNln",
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAF9OvXEz5do_kooJ",
+    "DISCORD_APPLICATION_ID": "1567910338223935488",
+    "DISCORD_PUBLIC_KEY": "05b17afb4446e047f189adb96419b770c9b1fcc467fe64ece888a2f2bb70d0c9",
+    "DISCORD_MOD_CHANNEL_ID": "1533842612568457389"
+  }
+  // Secrets (set by the deploy workflow from GitHub Actions secrets, never committed):
+  //   GH_OAUTH_CLIENT_SECRET, TURNSTILE_SECRET, GH_DISPATCH_TOKEN, DISCORD_BOT_TOKEN
+}
