@@ -66,7 +66,17 @@ export const MASS_REPORT_THRESHOLD = 3;
 export const RATING_PRIOR_MEAN = 3;
 export const RATING_PRIOR_WEIGHT = 5;
 
-export const LICENSES = ['cc-by-4.0', 'cc-by-sa-4.0', 'cc-by-nc-4.0', 'cc0-1.0', 'all-rights-reserved'];
+// License id → may others publish modified versions (remixes)? A custom license says it itself (null here).
+// Must match site/community/licenses.js (a test checks it).
+export const LICENSE_REMIX = Object.freeze({
+  'cc-by-4.0': true, 'cc-by-sa-4.0': true, 'cc-by-nc-4.0': true, 'cc-by-nc-sa-4.0': true,
+  'cc-by-nd-4.0': false, 'cc-by-nc-nd-4.0': false, 'cc0-1.0': true,
+  mit: true, 'apache-2.0': true, 'gpl-3.0': true, 'gpl-2.0': true, 'agpl-3.0': true, 'lgpl-3.0': true, 'lgpl-2.1': true,
+  'mpl-2.0': true, 'epl-2.0': true, 'bsd-2-clause': true, 'bsd-3-clause': true, 'bsl-1.0': true, unlicense: true,
+  'all-rights-reserved': false, custom: null,
+});
+export const LICENSES = Object.keys(LICENSE_REMIX);
+export const CUSTOM_LICENSE = { nameMax: 60, urlMax: 300 };
 
 export const PIPELINE_AUDIENCE = 'bas-community';
 export const PIPELINE_WORKFLOW = 'moderation.yml';

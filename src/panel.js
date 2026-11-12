@@ -277,7 +277,7 @@ export async function exportPerson(c) {
   const data = {
     exported_at: new Date(c.now).toISOString(),
     profile: { ...profile, github_id: githubId },
-    animations: await all('SELECT id, title, description, tags, license, credits, status, status_reason, size_bytes, width, height, fps, downloads, created_at, published_at FROM animations WHERE owner_id = ?'),
+    animations: await all('SELECT id, title, description, tags, license, license_name, license_url, license_remix, credits, status, status_reason, size_bytes, width, height, fps, downloads, created_at, published_at FROM animations WHERE owner_id = ?'),
     images: await all('SELECT id, kind, content_type, size_bytes, status, created_at FROM media WHERE owner_id = ?'),
     ratings: await all('SELECT animation_id, stars, updated_at FROM ratings WHERE user_id = ?'),
     following: await all('SELECT u.handle, f.created_at FROM follows f JOIN users u ON u.id = f.followee_id WHERE f.follower_id = ?'),

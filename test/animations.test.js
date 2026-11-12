@@ -208,6 +208,56 @@ test('search ignores accents and case, finds tags, descriptions and authors; @ s
   assert.deepEqual(await search('estudio'), [theirs]);
 });
 
+test('licenses: software and CC licenses, custom ones need a name, an https link and a remix answer; remixes follow the license', async () => {
+  const h = createHarness();
+  const sign = await oidcSigner(h);
+  const owner = await h.signIn('lumii55', { id: OWNER_GITHUB_ID });
+  const fan = await h.signIn('fan');
+  const draft = (who, title, extra) => h.request('POST', '/v1/animations', { token: who.token, json: {
+    title, license: 'cc-by-4.0', sha256: 'a'.repeat(64), size_bytes: 1000, turnstile_token: 'turnstile-ok', ...extra,
+  } });
+  for (const license of ['mit', 'apache-2.0', 'gpl-3.0', 'cc-by-nc-sa-4.0', 'cc-by-nd-4.0', 'unlicense']) {
+    const res = await draft(owner, `L ${license}`, { license, sha256: (license + 'x'.repeat(64)).replace(/[^a-f0-9]/g, 'b').slice(0, 64) });
+    assert.equal(res.status, 201, `${license}: ${JSON.stringify(res.data)}`);
+  }
+  assert.equal((await draft(owner, 'Bad', { license: 'wtfpl' })).data.error.code, 'invalid_license');
+  assert.equal((await draft(owner, 'No custom', { license: 'custom' })).data.error.code, 'invalid_license');
+  assert.equal((await draft(owner, 'No link', { license: 'custom', license_custom: { name: 'My license', remix: true } })).data.error.code, 'invalid_license_url');
+  assert.equal((await draft(owner, 'Http link', { license: 'custom', license_custom: { name: 'My license', url: 'http://x.test/l', remix: true } })).data.error.code, 'invalid_license_url');
+  assert.equal((await draft(owner, 'No remix answer', { license: 'custom', license_custom: { name: 'My license', url: 'https://x.test/l' } })).data.error.code, 'invalid_license');
+
+  const custom = await uploadAnimation(h, owner.token, { title: 'Custom one', extra: { license: 'custom', license_custom: { name: 'Stella Free License', url: 'https://example.com/license', remix: false } } });
+  await finishJob(h, sign, lastJob(h, 'animation', custom).id, CLEAN);
+  const nd = await uploadAnimation(h, owner.token, { title: 'No derivatives', extra: { license: 'cc-by-nd-4.0' } });
+  await finishJob(h, sign, lastJob(h, 'animation', nd).id, CLEAN);
+  const mit = await uploadAnimation(h, owner.token, { title: 'MIT one', extra: { license: 'mit' } });
+  await finishJob(h, sign, lastJob(h, 'animation', mit).id, CLEAN);
+
+  const detail = (await h.request('GET', `/v1/animations/${custom}`)).data;
+  assert.deepEqual(detail.license_custom, { name: 'Stella Free License', url: 'https://example.com/license' });
+  assert.equal(detail.remix_allowed, false);
+  assert.equal((await h.request('GET', `/v1/animations/${nd}`)).data.remix_allowed, false);
+  assert.equal((await h.request('GET', `/v1/animations/${mit}`)).data.remix_allowed, true);
+  assert.equal((await h.request('GET', `/v1/animations/${mit}`)).data.license_custom, null);
+
+  // Someone else cannot publish a remix of a no-remix animation; a permissive one is fine; the author always may.
+  const remix = (who, of, title) => draft(who, title, { remix_of: of, sha256: sha256Of(title) });
+  const sha256Of = (text) => Array.from(text.padEnd(64, '0').slice(0, 64), (ch) => (ch.charCodeAt(0) % 16).toString(16)).join('');
+  assert.equal((await remix(fan, nd, 'Remix nd')).data.error.code, 'remix_not_allowed');
+  assert.equal((await remix(fan, custom, 'Remix custom')).data.error.code, 'remix_not_allowed');
+  assert.equal((await remix(fan, mit, 'Remix mit')).status, 201);
+  assert.equal((await remix(owner, nd, 'Own remix')).status, 201);
+
+  // Editing keeps the custom license unless it is changed; switching away clears it.
+  await h.request('PATCH', `/v1/animations/${custom}`, { token: owner.token, json: { title: 'Custom renamed', license: 'custom' } });
+  assert.equal((await h.request('GET', `/v1/animations/${custom}`)).data.license_custom.name, 'Stella Free License');
+  await h.request('PATCH', `/v1/animations/${custom}`, { token: owner.token, json: { license: 'custom', license_custom: { name: 'Stella Free License', url: 'https://example.com/license', remix: true } } });
+  assert.equal((await h.request('GET', `/v1/animations/${custom}`)).data.remix_allowed, true);
+  await h.request('PATCH', `/v1/animations/${custom}`, { token: owner.token, json: { license: 'cc0-1.0' } });
+  const after = h.db.row('SELECT license, license_name, license_url, license_remix FROM animations WHERE id = ?', custom);
+  assert.deepEqual({ ...after }, { license: 'cc0-1.0', license_name: null, license_url: null, license_remix: null });
+});
+
 test('downloads count once per viewer per day; the uploader does not count', async () => {
   const h = createHarness();
   const sign = await oidcSigner(h);

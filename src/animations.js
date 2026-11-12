@@ -1,7 +1,7 @@
 // Animations: upload (draft → file → automatic checks), feeds, details, downloads, ratings and remixes.
 
 import { currentUser, isModerator, requireUser } from './auth.js';
-import { DRAFT_TTL_MS, LICENSES, LIMITS, RATE } from './config.js';
+import { CUSTOM_LICENSE, DRAFT_TTL_MS, LICENSES, LIMITS, RATE } from './config.js';
 import { fail, json, readJson } from './lib/http.js';
 import { clientIp, rateLimit } from './lib/ratelimit.js';
 import { animationSearchText, containsPattern, foldText } from './lib/search.js';
@@ -12,7 +12,7 @@ import { assertAllowed } from './sanctions.js';
 import { getSettings } from './settings.js';
 import { animationKey, previewKey, releaseStorage, releaseStorageStatement, reserveStorage, storageStatus } from './storage.js';
 import { ratingRecompute } from './users.js';
-import { animationCard, animationDetail, OWNER_COLUMNS, ratingOf } from './views.js';
+import { animationCard, animationDetail, OWNER_COLUMNS, ratingOf, remixAllowed } from './views.js';
 
 const STORED = new Set(['scanning', 'review', 'published', 'hidden']);
 
@@ -32,6 +32,23 @@ function cleanCredits(value) {
   return credits;
 }
 
+// A custom license: its name, an https link to its text (required) and whether remixes are allowed.
+function cleanCustomLicense(input) {
+  if (!input || typeof input !== 'object') throw fail(400, 'invalid_license', 'Name the license and link to it', { details: { field: 'license_custom' } });
+  const name = cleanText(input.name, { field: 'license_custom.name', min: 2, max: CUSTOM_LICENSE.nameMax });
+  let url;
+  try {
+    url = new URL(String(input.url || ''));
+  } catch {
+    throw fail(400, 'invalid_license_url', 'The license link must be an https URL', { details: { field: 'license_custom.url' } });
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.href.length > CUSTOM_LICENSE.urlMax) {
+    throw fail(400, 'invalid_license_url', 'The license link must be an https URL', { details: { field: 'license_custom.url' } });
+  }
+  if (typeof input.remix !== 'boolean') throw fail(400, 'invalid_license', 'Say whether remixes are allowed', { details: { field: 'license_custom.remix' } });
+  return { name, url: url.href, remix: input.remix };
+}
+
 function animationFields(body, current = {}) {
   const has = (key) => body[key] !== undefined;
   const fields = {
@@ -44,12 +61,17 @@ function animationFields(body, current = {}) {
     credits: has('credits') ? cleanCredits(body.credits) : JSON.parse(current.credits || '{}'),
   };
   if (!LICENSES.includes(fields.license)) throw fail(400, 'invalid_license', 'Choose a license', { details: { field: 'license' } });
+  fields.custom = fields.license !== 'custom' ? null
+    : has('license_custom') || !current.license_name ? cleanCustomLicense(body.license_custom)
+      : { name: current.license_name, url: current.license_url, remix: !!current.license_remix };
   if (current.credits) {
     const previous = JSON.parse(current.credits);
     if (previous.detected_manufacturer) fields.credits.detected_manufacturer = previous.detected_manufacturer;
   }
   return fields;
 }
+
+const customColumns = (fields) => (fields.custom ? [fields.custom.name, fields.custom.url, fields.custom.remix ? 1 : 0] : [null, null, null]);
 
 function tagStatements(db, id, tags) {
   return [
@@ -83,8 +105,11 @@ export async function createDraft(c) {
   let remixOf = null;
   if (body.remix_of !== undefined && body.remix_of !== null) {
     remixOf = requireId(body.remix_of, 'animation');
-    const source = await c.env.DB.prepare("SELECT id FROM animations WHERE id = ? AND status = 'published'").bind(remixOf).first();
+    const source = await c.env.DB.prepare("SELECT id, owner_id, license, license_remix FROM animations WHERE id = ? AND status = 'published'").bind(remixOf).first();
     if (!source) throw fail(400, 'invalid_remix', 'The original animation is not available');
+    if (source.owner_id !== user.id && !remixAllowed(source)) {
+      throw fail(403, 'remix_not_allowed', 'The author does not allow remixes of this animation');
+    }
   }
   const existing = await c.env.DB.prepare("SELECT id, status FROM animations WHERE sha256 = ? AND status NOT IN ('draft', 'removed')")
     .bind(sha256)
@@ -98,11 +123,12 @@ export async function createDraft(c) {
 
   const id = newId();
   await c.env.DB.prepare(
-    `INSERT INTO animations (id, owner_id, title, description, tags, license, credits, remix_of, status, sha256, size_bytes, created_at, updated_at, search_text)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
+    `INSERT INTO animations (id, owner_id, title, description, tags, license, credits, remix_of, status, sha256, size_bytes, created_at, updated_at,
+       search_text, license_name, license_url, license_remix)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(id, user.id, fields.title, fields.description, JSON.stringify(fields.tags), fields.license, JSON.stringify(fields.credits),
-      remixOf, sha256, size, c.now, c.now, animationSearchText(fields))
+      remixOf, sha256, size, c.now, c.now, animationSearchText(fields), ...customColumns(fields))
     .run();
   return json({ id, upload_url: new URL(`/v1/animations/${id}/file`, c.env.PUBLIC_URL).href, expires_at: c.now + DRAFT_TTL_MS }, 201);
 }
@@ -290,8 +316,10 @@ export async function update(c) {
   const body = await readJson(c.request, LIMITS.jsonBodyBytes);
   const fields = animationFields(body, row);
   await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE animations SET title = ?, description = ?, tags = ?, license = ?, credits = ?, search_text = ?, updated_at = ? WHERE id = ?')
-      .bind(fields.title, fields.description, JSON.stringify(fields.tags), fields.license, JSON.stringify(fields.credits), animationSearchText(fields), c.now, id),
+    c.env.DB.prepare(`UPDATE animations SET title = ?, description = ?, tags = ?, license = ?, credits = ?, search_text = ?,
+                        license_name = ?, license_url = ?, license_remix = ?, updated_at = ? WHERE id = ?`)
+      .bind(fields.title, fields.description, JSON.stringify(fields.tags), fields.license, JSON.stringify(fields.credits), animationSearchText(fields),
+        ...customColumns(fields), c.now, id),
     ...tagStatements(c.env.DB, id, fields.tags),
   ]);
   // New text is checked again (same rules as on upload).

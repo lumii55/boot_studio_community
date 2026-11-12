@@ -1,6 +1,7 @@
 // JSON shapes returned to the site. Keep them small: they are what the feed renders.
 
 import { isModerator } from './auth.js';
+import { LICENSE_REMIX } from './config.js';
 import { permissionsOf } from './permissions.js';
 
 export const mediaUrl = (env, id) => (id ? new URL(`/v1/media/${id}`, env.PUBLIC_URL).href : null);
@@ -68,12 +69,20 @@ export function animationCard(env, row) {
   };
 }
 
+// May other people publish a remix of this animation? (The author always may.)
+export function remixAllowed(row) {
+  if (row.license === 'custom') return !!row.license_remix;
+  return LICENSE_REMIX[row.license] !== false;
+}
+
 export function animationDetail(env, row, viewer, extra = {}) {
   const mine = !!viewer && viewer.id === row.owner_id;
   const detail = {
     ...animationCard(env, row),
     description: row.description,
     license: row.license,
+    license_custom: row.license === 'custom' && row.license_name ? { name: row.license_name, url: row.license_url } : null,
+    remix_allowed: remixAllowed(row),
     credits: JSON.parse(row.credits || '{}'),
     remix_of: row.remix_of,
     frame_count: row.frame_count,
