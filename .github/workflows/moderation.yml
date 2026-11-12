@@ -14,6 +14,8 @@ permissions:
 concurrency:
   group: moderation-${{ inputs.job_id }}
   cancel-in-progress: false
+env:
+  TORCH_VERSION: "2.7.1"
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -21,17 +23,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            pipeline/requirements.txt
-            pipeline/requirements-vision.txt
-      - run: pip install -r pipeline/requirements.txt
-      - name: Image model (CPU)
+      # The installed packages (torch, transformers, Pillow) are kept between runs, so a check does not spend
+      # ~30 s installing them every time. Same pinned versions either way; any change makes a new key.
+      - name: Restore installed packages
+        id: venv
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/venv
+          key: venv-${{ env.ImageOS }}-py${{ steps.python.outputs.python-version }}-torch${{ env.TORCH_VERSION }}-${{ hashFiles('pipeline/requirements.txt', 'pipeline/requirements-vision.txt') }}
+      - name: Install packages (only when not kept)
+        if: steps.venv.outputs.cache-hit != 'true'
         run: |
-          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.7.1
-          pip install -r pipeline/requirements-vision.txt
+          python -m venv ~/venv
+          ~/venv/bin/pip install -r pipeline/requirements.txt
+          ~/venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}"
+          ~/venv/bin/pip install -r pipeline/requirements-vision.txt
+      # Saved right away, so it is kept even if this run's check fails.
+      - name: Keep installed packages
+        if: steps.venv.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/venv
+          key: ${{ steps.venv.outputs.cache-primary-key }}
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
@@ -39,4 +55,4 @@ jobs:
       - name: Run checks
         env:
           JOB_ID: ${{ inputs.job_id }}
-        run: python -I pipeline/run_job.py
+        run: ~/venv/bin/python -I pipeline/run_job.py
