@@ -41,6 +41,8 @@ export const RATE = {
 };
 
 export const SESSION_DAYS = 30;
+// Public contact (also in the terms and the privacy policy); shown to punished people to contest.
+export const CONTACT_EMAIL = 'bootanimstudio@gmail.com';
 export const OAUTH_STATE_MINUTES = 10;
 export const GRANT_SECONDS = 120;
 export const DRAFT_TTL_MS = 60 * 60 * 1000;

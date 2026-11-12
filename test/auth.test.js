@@ -68,6 +68,25 @@ test('denied authorization and banned accounts come back to the site with an err
   await assert.rejects(h.signIn('spammer'), /bas-auth-error=banned/);
 });
 
+test('signing in to a banned account shows why (one-time code, no session)', async () => {
+  const h = createHarness();
+  const owner = await h.signIn('lumii55', { id: OWNER_GITHUB_ID });
+  const spammer = await h.signIn('spammer');
+  await h.request('POST', '/v1/mod/users/spammer/sanctions', { token: owner.token, json: { kind: 'ban', reason: 'Spam links in every upload' } });
+  const failure = await h.signIn('spammer').catch((error) => error.message);
+  const fragment = new URLSearchParams(String(failure).replace('sign-in failed: ', ''));
+  assert.equal(fragment.get('bas-auth-error'), 'banned');
+  assert.equal(fragment.get('bas-auth'), null);
+  const sessionsBefore = h.db.row('SELECT COUNT(*) AS n FROM sessions').n;
+  const res = await h.request('POST', '/v1/auth/exchange', { json: { grant: fragment.get('notice') } });
+  assert.equal(res.status, 403);
+  assert.deepEqual({ ...res.data.error.details, since: null }, {
+    kind: 'ban', reason: 'Spam links in every upload', since: null, until: null, handle: 'spammer', contact: 'bootanimstudio@gmail.com',
+  });
+  assert.equal(h.db.row('SELECT COUNT(*) AS n FROM sessions').n, sessionsBefore); // no session was created
+  assert.equal((await h.request('POST', '/v1/auth/exchange', { json: { grant: fragment.get('notice') } })).data.error.code, 'invalid_grant'); // one-time
+});
+
 test('invalid or missing tokens get 401; logout ends the session', async () => {
   const h = createHarness();
   assert.equal((await h.request('GET', '/v1/me')).status, 401);

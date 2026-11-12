@@ -58,15 +58,14 @@ export async function applySanction(c, actor, target, input, { source = 'panel',
   ];
   if (input.kind === 'ban') {
     statements.push(
+      // Sessions stay but grant nothing (see requireUser): their next use tells the person why, then ends.
       db.prepare("UPDATE users SET status = 'banned', updated_at = ? WHERE id = ?").bind(c.now, target.id),
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.id),
       db.prepare("UPDATE animations SET status = 'hidden', status_reason = ?, updated_at = ? WHERE owner_id = ? AND status IN ('published', 'review', 'scanning')")
         .bind(HIDDEN_BY.ban, c.now, target.id),
     );
   } else if (input.kind === 'suspend') {
     statements.push(
       db.prepare('UPDATE users SET suspended_until = MAX(COALESCE(suspended_until, 0), ?), updated_at = ? WHERE id = ?').bind(endsAt, c.now, target.id),
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.id),
     );
     if (input.hideUploads) {
       statements.push(db.prepare("UPDATE animations SET status = 'hidden', status_reason = ?, updated_at = ? WHERE owner_id = ? AND status = 'published'")

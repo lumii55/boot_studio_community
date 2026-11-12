@@ -53,7 +53,10 @@ test('people: search, ban/unban (uploads come back), trust; moderators cannot to
 
   assert.equal((await h.request('POST', '/v1/mod/users/maker/action', { token: mod.token, json: { action: 'ban', reason: 'spam' } })).status, 200);
   assert.equal(h.db.row('SELECT status FROM animations WHERE id = ?', live).status, 'hidden');
-  assert.equal((await h.request('GET', '/v1/me', { token: maker.token })).status, 401);
+const restricted = await h.request('GET', '/v1/me', { token: maker.token });
+  assert.equal(restricted.status, 403);
+  assert.equal(restricted.data.error.code, 'account_restricted');
+  assert.equal((await h.request('GET', '/v1/me', { token: maker.token })).status, 401); // the session ended after explaining
   assert.deepEqual((await h.request('GET', '/v1/mod/users?filter=banned', { token: mod.token })).data.items.map((item) => item.handle), ['maker']);
   await h.request('POST', '/v1/mod/users/maker/action', { token: mod.token, json: { action: 'unban' } });
   assert.equal(h.db.row('SELECT status FROM animations WHERE id = ?', live).status, 'published');

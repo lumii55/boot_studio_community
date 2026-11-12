@@ -4,7 +4,7 @@
 //       site POSTs the one-time grant to /v1/auth/exchange and receives a session token.
 // The GitHub access token is used once to read the profile and then dropped. Only token hashes are stored.
 
-import { GRANT_SECONDS, LIMITS, OAUTH_STATE_MINUTES, RATE, SESSION_DAYS } from './config.js';
+import { CONTACT_EMAIL, GRANT_SECONDS, LIMITS, OAUTH_STATE_MINUTES, RATE, SESSION_DAYS } from './config.js';
 import { fail, json, readJson, redirect } from './lib/http.js';
 import { clientIp, rateLimit } from './lib/ratelimit.js';
 import { personSearchText } from './lib/search.js';
@@ -60,15 +60,14 @@ export async function githubCallback(c) {
   }
 
   const user = await upsertUser(c, profile);
-  if (user.status === 'banned') return siteRedirect(c.env, 'bas-auth-error=banned');
-  if (user.suspended_until && user.suspended_until > c.now) {
-    return siteRedirect(c.env, `bas-auth-error=suspended&until=${user.suspended_until}`);
-  }
-
   const grant = randomToken(32);
   await c.env.DB.prepare('INSERT INTO auth_grants (code_hash, user_id, expires_at) VALUES (?, ?, ?)')
     .bind(await sha256Hex(grant), user.id, c.now + GRANT_SECONDS * 1000)
     .run();
+  // A banned or suspended person gets no session; the one-time code only reads why (POST /v1/auth/exchange answers
+  // 403 account_restricted with the punishment, its reason, how long and the contact to contest it).
+  if (user.status === 'banned') return siteRedirect(c.env, `bas-auth-error=banned&notice=${grant}`);
+  if (isSuspended(user, c.now)) return siteRedirect(c.env, `bas-auth-error=suspended&until=${user.suspended_until}&notice=${grant}`);
   return siteRedirect(c.env, `bas-auth=${grant}&to=${encodeURIComponent(saved.return_to)}`);
 }
 
@@ -146,6 +145,9 @@ export async function exchangeGrant(c) {
     .bind(await sha256Hex(body.grant))
     .first();
   if (!row || row.expires_at < c.now) throw fail(400, 'invalid_grant', 'Sign-in code expired, sign in again');
+  const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(row.user_id).first();
+  if (!user) throw fail(400, 'invalid_grant', 'Sign-in code expired, sign in again');
+  if (isRestricted(user, c.now)) throw await restrictedError(c, user);
   const token = randomToken(32);
   await c.env.DB.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
     .bind(await sha256Hex(token), row.user_id, c.now, c.now + SESSION_DAYS * 86400000)
@@ -178,12 +180,43 @@ export async function currentUser(c) {
   )
     .bind(hash, c.now)
     .first();
-  if (user && user.status === 'active' && !(user.suspended_until && user.suspended_until > c.now)) c.user = user;
+  if (user && user.status === 'active' && !isSuspended(user, c.now)) c.user = user;
+  else if (user && isRestricted(user, c.now)) c.restricted = { user, hash };
   return c.user;
+}
+
+const isSuspended = (user, now) => !!(user.suspended_until && user.suspended_until > now);
+const isRestricted = (user, now) => user.status === 'banned' || isSuspended(user, now);
+
+// What a punished person is told: the punishment, its reason, since/until when and where to contest it.
+export async function restrictionNotice(c, user) {
+  const kind = user.status === 'banned' ? 'ban' : 'suspend';
+  const row = await c.env.DB.prepare(
+    `SELECT reason, created_at FROM sanctions WHERE user_id = ? AND kind = ? AND revoked_at IS NULL
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).bind(user.id, kind).first();
+  return {
+    kind,
+    reason: row ? row.reason : '',
+    since: row ? row.created_at : null,
+    until: kind === 'suspend' ? user.suspended_until : null,
+    handle: user.handle,
+    contact: CONTACT_EMAIL,
+  };
+}
+
+async function restrictedError(c, user) {
+  const notice = await restrictionNotice(c, user);
+  return fail(403, 'account_restricted', notice.kind === 'ban' ? 'This account is banned' : 'This account is suspended', { details: notice });
 }
 
 export async function requireUser(c) {
   const user = await currentUser(c);
+  if (!user && c.restricted) {
+    // The session of a punished account grants nothing; its first use explains why and ends it.
+    await c.env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(c.restricted.hash).run();
+    throw await restrictedError(c, c.restricted.user);
+  }
   if (!user) throw fail(401, 'sign_in_required', 'Sign in to continue');
   return user;
 }

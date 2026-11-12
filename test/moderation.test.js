@@ -100,7 +100,10 @@ test('ban: sessions end, uploads are hidden; the owner cannot be banned', async 
   await report(reporters[0], 'hate');
   const [item] = await queue('reports');
   await h.request('POST', `/v1/mod/cases/${item.id}/action`, { token: owner.token, json: { action: 'ban' } });
-  assert.equal((await h.request('GET', '/v1/me', { token: creator.token })).status, 401);
+const restricted = await h.request('GET', '/v1/me', { token: creator.token });
+  assert.equal(restricted.status, 403);
+  assert.equal(restricted.data.error.code, 'account_restricted');
+  assert.equal((await h.request('GET', '/v1/me', { token: creator.token })).status, 401); // the session ended after explaining
   assert.equal(h.db.row('SELECT status FROM animations WHERE id = ?', id).status, 'hidden');
   assert.equal(h.db.row('SELECT status FROM users WHERE id = ?', creator.user.id).status, 'banned');
 

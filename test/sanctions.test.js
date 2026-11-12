@@ -111,6 +111,14 @@ test('suspension: signed out, cannot sign in, uploads stay visible by default; i
   const theirs = await publish(user, 'Person boot');
   assert.equal((await punish(owner, { kind: 'suspend', reason: 'Harassment' })).data.error.code, 'invalid_duration');
   assert.equal((await punish(owner, { kind: 'suspend', days: 3, reason: 'Harassment' })).status, 201);
+  // The old session explains the punishment once (kind, reason, until, contact), then ends.
+  const restricted = await h.request('GET', '/v1/me', { token: user.token });
+  assert.equal(restricted.status, 403);
+  assert.equal(restricted.data.error.code, 'account_restricted');
+  assert.equal(restricted.data.error.details.kind, 'suspend');
+  assert.equal(restricted.data.error.details.reason, 'Harassment');
+  assert.equal(restricted.data.error.details.until, h.now + 3 * DAY);
+  assert.equal(restricted.data.error.details.contact, 'bootanimstudio@gmail.com');
   assert.equal((await h.request('GET', '/v1/me', { token: user.token })).status, 401);
   await assert.rejects(h.signIn('person'), /bas-auth-error=suspended/);
   assert.equal((await h.request('GET', `/v1/animations/${theirs}`)).status, 200); // still visible
