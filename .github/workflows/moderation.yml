@@ -33,7 +33,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/venv
-          key: venv-${{ env.ImageOS }}-py${{ steps.python.outputs.python-version }}-torch${{ env.TORCH_VERSION }}-${{ hashFiles('pipeline/requirements.txt', 'pipeline/requirements-vision.txt') }}
+          key: venv-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-torch${{ env.TORCH_VERSION }}-${{ hashFiles('pipeline/requirements.txt', 'pipeline/requirements-vision.txt') }}
       - name: Install packages (only when not kept)
         if: steps.venv.outputs.cache-hit != 'true'
         run: |
