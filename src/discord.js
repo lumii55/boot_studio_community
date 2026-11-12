@@ -4,6 +4,7 @@
 
 import { ACTIONS, caseTab, panelUrl, performCaseAction, targetSummary } from './moderation.js';
 import { fail, json } from './lib/http.js';
+import { getSettings } from './settings.js';
 import { hexToBytes } from './lib/util.js';
 
 const API = 'https://discord.com/api/v10';
@@ -96,6 +97,14 @@ export async function notifyCase(env, caseId) {
     if (!row) return;
     const message = await buildCaseMessage(env, row);
     const existing = await env.DB.prepare('SELECT channel_id, message_id FROM discord_messages WHERE case_id = ?').bind(caseId).first();
+    if (!existing) {
+      // New posts follow the owner's choice of events; critical reports are always posted.
+      const { discord_events: events } = await getSettings(env);
+      const tab = caseTab(row);
+      const event = tab === 'review' ? (row.kind === 'automod' ? 'automod' : 'review') : tab;
+      const critical = tab === 'reports' && row.max_severity >= 3;
+      if (events[event] === false && !critical) return;
+    }
     if (existing) {
       await discordFetch(env, `/channels/${existing.channel_id}/messages/${existing.message_id}`, {
         method: 'PATCH',

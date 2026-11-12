@@ -5,7 +5,7 @@
 //   * any other report → reports tab, ordered by severity.
 
 import { requireUser } from './auth.js';
-import { LIMITS, MASS_REPORT_THRESHOLD, RATE, REPORT_CATEGORIES } from './config.js';
+import { LIMITS, RATE, REPORT_CATEGORIES } from './config.js';
 import { notifyCase } from './discord.js';
 import { fail, json, readJson } from './lib/http.js';
 import { rateLimit } from './lib/ratelimit.js';
@@ -13,6 +13,8 @@ import { requireTurnstile } from './lib/turnstile.js';
 import { cleanText, HANDLE_RE, newId, requireId } from './lib/util.js';
 import { logAction, openCase } from './moderation.js';
 import { queueJob } from './pipeline.js';
+import { assertAllowed } from './sanctions.js';
+import { getSettings } from './settings.js';
 
 async function resolveTarget(c, type, raw) {
   if (type === 'animation') {
@@ -34,6 +36,7 @@ async function resolveTarget(c, type, raw) {
 
 export async function createReport(c) {
   const reporter = await requireUser(c);
+  await assertAllowed(c, reporter, 'report');
   await rateLimit(c, 'report', reporter.id, RATE.reportDay);
   const body = await readJson(c.request, LIMITS.jsonBodyBytes);
   const severity = REPORT_CATEGORIES[body.category];
@@ -61,7 +64,8 @@ export async function createReport(c) {
      WHERE id = ?1 RETURNING report_count, mass, max_severity`,
   ).bind(opened.id, c.now).first();
 
-  if (!counted.mass && counted.report_count >= MASS_REPORT_THRESHOLD) {
+  const { mass_report_threshold: threshold } = await getSettings(c.env);
+  if (!counted.mass && counted.report_count >= threshold) {
     const statements = [db.prepare('UPDATE cases SET mass = 1, updated_at = ? WHERE id = ?').bind(c.now, opened.id)];
     if (target.published) {
       statements.push(

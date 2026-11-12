@@ -31,7 +31,7 @@ VISUAL_PENDING = checks.finding(
 _vision = None
 
 
-def vision_check(images, credits=None, *, logos=True):
+def vision_check(images, credits=None, *, logos=True, sensitivity="normal"):
     """(findings, detected) from the image model; falls back to manual review if it cannot run."""
     global _vision
     if os.environ.get("BAS_VISION", "on") == "off" or not images:
@@ -41,7 +41,7 @@ def vision_check(images, credits=None, *, logos=True):
             import vision  # noqa: PLC0415 - heavy import only when needed
             _vision = vision.Vision()
         import vision  # noqa: PLC0415
-        return vision.assess(_vision.score(images, logos=logos), credits, logos=logos)
+        return vision.assess(_vision.score(images, logos=logos), credits, logos=logos, sensitivity=sensitivity)
     except Exception as err:  # noqa: BLE001 - never let the model decide by crashing
         print(f"vision unavailable: {type(err).__name__}: {err}", file=sys.stderr)
         return [VISUAL_PENDING], {}
@@ -88,7 +88,7 @@ def check_animation(api: Api, job_id: str, subject: dict) -> dict:
             preview = checks.make_preview(images, report.metadata["fps"], step)
             if preview:
                 api.call("PUT", f"/v1/pipeline/jobs/{job_id}/preview", preview, "image/webp")
-            found, detected = vision_check(images, subject.get("credits"))
+            found, detected = vision_check(images, subject.get("credits"), sensitivity=subject.get("sensitivity", "normal"))
             report.findings.extend(found)
     findings = report.findings
     return {"verdict": checks.verdict(findings), "findings": findings, "metadata": report.metadata, "detected": detected}
@@ -101,7 +101,7 @@ def check_media(api: Api, job_id: str, subject: dict) -> dict:
         import io  # noqa: PLC0415
         from PIL import Image  # noqa: PLC0415
         image = Image.open(io.BytesIO(data)).convert("RGB")
-        found, _ = vision_check([image], logos=False)  # avatars and banners: only the safety groups
+        found, _ = vision_check([image], logos=False, sensitivity=subject.get("sensitivity", "normal"))  # avatars/banners: safety only
         findings.extend(found)
     return {"verdict": checks.verdict(findings), "findings": findings}
 
@@ -131,8 +131,9 @@ def main() -> int:
     api = Api(os.environ.get("BAS_API") or api_base_from_config(), oidc_token())
     job = api.json("GET", f"/v1/pipeline/jobs/{job_id}")
     kind = job["job"]["kind"]
+    subject = {**job["subject"], "sensitivity": job.get("sensitivity", "normal")}
     try:
-        result = CHECKS[kind](api, job_id, job["subject"])
+        result = CHECKS[kind](api, job_id, subject)
     except Exception as err:  # noqa: BLE001 - report instead of leaving the job hanging
         print(f"check failed: {type(err).__name__}: {err}", file=sys.stderr)
         result = {"verdict": "review", "findings": [checks.finding("pipeline_error", 1, "Automatic checks failed; review manually.")]}

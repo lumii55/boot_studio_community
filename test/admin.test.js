@@ -8,7 +8,7 @@ async function world() {
   const owner = await h.signIn('lumii55', { id: OWNER_GITHUB_ID });
   const maker = await h.signIn('maker');
   const mod = await h.signIn('helper');
-  await h.request('PUT', '/v1/mod/users/helper/role', { token: owner.token, json: { role: 'moderator' } });
+  await h.request('PUT', '/v1/mod/users/helper/role', { token: owner.token, json: { role: 'moderator', permissions: ['review', 'remove', 'feature', 'recheck', 'trust', 'ban'] } });
   const published = async (who, title) => {
     const id = await uploadAnimation(h, who.token, { title });
     await finishJob(h, sign, lastJob(h, 'animation', id).id, CLEAN);
@@ -64,8 +64,8 @@ test('people: search, ban/unban (uploads come back), trust; moderators cannot to
   await h.request('PUT', '/v1/mod/users/maker/role', { token: owner.token, json: { role: 'moderator' } });
   assert.equal((await h.request('POST', '/v1/mod/users/maker/action', { token: mod.token, json: { action: 'ban' } })).status, 403);
   assert.equal((await h.request('POST', '/v1/mod/users/maker/action', { token: owner.token, json: { action: 'ban' } })).status, 200);
-  const logged = h.db.rows("SELECT action FROM mod_actions WHERE action LIKE 'user_%' ORDER BY rowid").map((row) => row.action);
-  assert.deepEqual(logged, ['user_ban', 'user_unban', 'user_untrust', 'user_ban']);
+  const logged = h.db.rows("SELECT action FROM mod_actions WHERE action IN ('sanction_ban', 'revoke_ban', 'user_untrust') ORDER BY rowid").map((row) => row.action);
+  assert.deepEqual(logged, ['sanction_ban', 'revoke_ban', 'user_untrust', 'sanction_ban']);
 });
 
 test('animations: list by status, hide/restore, feature (Explore filter), recheck, remove', async () => {

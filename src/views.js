@@ -1,6 +1,7 @@
 // JSON shapes returned to the site. Keep them small: they are what the feed renders.
 
 import { isModerator } from './auth.js';
+import { permissionsOf } from './permissions.js';
 
 export const mediaUrl = (env, id) => (id ? new URL(`/v1/media/${id}`, env.PUBLIC_URL).href : null);
 
@@ -34,6 +35,7 @@ export function ownProfile(env, user, pending) {
     ...publicProfile(env, user, user),
     role: user.role,
     trust: user.trust,
+    permissions: permissionsOf(user),
     discord_linked: !!user.discord_id,
     pending_avatar_url: pending.avatar ? mediaUrl(env, pending.avatar) : null,
     pending_banner_url: pending.banner ? mediaUrl(env, pending.banner) : null,

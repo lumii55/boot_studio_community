@@ -7,6 +7,8 @@ import { clientIp, rateLimit } from './lib/ratelimit.js';
 import { requireTurnstile } from './lib/turnstile.js';
 import { cleanTags, cleanText, decodeCursor, encodeCursor, newId, randomToken, requireId, SHA256_RE, sha256Hex, utcDay } from './lib/util.js';
 import { queueJob } from './pipeline.js';
+import { assertAllowed } from './sanctions.js';
+import { getSettings } from './settings.js';
 import { animationKey, previewKey, releaseStorage, releaseStorageStatement, reserveStorage, storageStatus } from './storage.js';
 import { ratingRecompute } from './users.js';
 import { animationCard, animationDetail, OWNER_COLUMNS, ratingOf } from './views.js';
@@ -58,21 +60,24 @@ function tagStatements(db, id, tags) {
 // POST /v1/animations — metadata first; the file follows with PUT /v1/animations/:id/file.
 export async function createDraft(c) {
   const user = await requireUser(c);
+  await assertAllowed(c, user, 'upload');
+  const settings = await getSettings(c.env);
+  const maxBytes = Math.min(LIMITS.animationBytes, settings.max_animation_mb * 1024 * 1024);
   const body = await readJson(c.request, LIMITS.jsonBodyBytes);
 
   const sha256 = String(body.sha256 || '').toLowerCase();
   const size = Number(body.size_bytes);
   if (!SHA256_RE.test(sha256)) throw fail(400, 'invalid_sha256', 'Invalid file hash');
   if (!Number.isSafeInteger(size) || size < 22) throw fail(400, 'invalid_size', 'Invalid file size');
-  if (size > LIMITS.animationBytes) throw fail(413, 'too_large', 'Animations can be at most 50 MB', { details: { max: LIMITS.animationBytes } });
+  if (size > maxBytes) throw fail(413, 'too_large', `Animations can be at most ${settings.max_animation_mb} MB`, { details: { max: maxBytes } });
   if ((await storageStatus(c.env)).paused) throw fail(507, 'uploads_paused', 'Uploads are paused for now, try again later');
 
   const fields = animationFields(body);
   await requireTurnstile(c, body.turnstile_token);
   // Only real attempts count towards the limit; the team is not limited.
   if (!isModerator(user)) {
-    await rateLimit(c, 'upload-h', user.id, RATE.uploadHour);
-    await rateLimit(c, 'upload-d', user.id, RATE.uploadDay);
+    await rateLimit(c, 'upload-h', user.id, [settings.uploads_per_hour, RATE.uploadHour[1]]);
+    await rateLimit(c, 'upload-d', user.id, [settings.uploads_per_day, RATE.uploadDay[1]]);
   }
   let remixOf = null;
   if (body.remix_of !== undefined && body.remix_of !== null) {
@@ -104,6 +109,7 @@ export async function createDraft(c) {
 // PUT /v1/animations/:id/file — raw ZIP body, streamed into R2. R2 checks the SHA-256 declared in the draft.
 export async function uploadFile(c) {
   const user = await requireUser(c);
+  await assertAllowed(c, user, 'upload');
   const id = requireId(c.params.id, 'animation');
   const row = await c.env.DB.prepare('SELECT * FROM animations WHERE id = ? AND owner_id = ?').bind(id, user.id).first();
   if (!row) throw fail(404, 'not_found', 'Unknown animation');
@@ -268,6 +274,7 @@ export async function mine(c) {
 
 export async function update(c) {
   const user = await requireUser(c);
+  await assertAllowed(c, user, 'upload');
   await rateLimit(c, 'profile', user.id, RATE.profileHour);
   const id = requireId(c.params.id, 'animation');
   const row = await c.env.DB.prepare('SELECT * FROM animations WHERE id = ? AND owner_id = ?').bind(id, user.id).first();
@@ -371,6 +378,7 @@ export async function preview(c) {
 
 export async function rate(c) {
   const viewer = await requireUser(c);
+  await assertAllowed(c, viewer, 'rate');
   await rateLimit(c, 'rating', viewer.id, RATE.ratingHour);
   const { row } = await loadVisible(c, c.params.id, { allowOwner: false });
   if (row.status !== 'published') throw fail(404, 'not_found', 'Unknown animation');

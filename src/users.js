@@ -8,6 +8,7 @@ import { rateLimit } from './lib/ratelimit.js';
 import { cleanLinks, cleanText, decodeCursor, encodeCursor, HANDLE_RE, newId, requireId } from './lib/util.js';
 import { notifyStatement } from './notifications.js';
 import { queueJob } from './pipeline.js';
+import { assertAllowed } from './sanctions.js';
 import { animationKey, mediaKey, previewKey, releaseStorageStatement, reserveStorage } from './storage.js';
 import { animationCard, OWNER_COLUMNS, ownProfile, publicProfile, userCard } from './views.js';
 
@@ -27,6 +28,7 @@ export async function me(c) {
 
 export async function updateProfile(c) {
   const user = await requireUser(c);
+  await assertAllowed(c, user, 'profile');
   await rateLimit(c, 'profile', user.id, RATE.profileHour);
   const body = await readJson(c.request, LIMITS.jsonBodyBytes);
   const next = {
@@ -56,6 +58,7 @@ export async function uploadMedia(c) {
   const user = await requireUser(c);
   const kind = c.params.kind;
   if (!MEDIA_RULES[kind]) throw fail(404, 'not_found', 'Unknown image kind');
+  await assertAllowed(c, user, 'profile');
   await rateLimit(c, 'media', user.id, RATE.mediaHour);
   const max = kind === 'avatar' ? LIMITS.avatarBytes : LIMITS.bannerBytes;
   const bytes = await readBytes(c.request, max);
@@ -87,6 +90,7 @@ export async function uploadMedia(c) {
 
 export async function deleteMedia(c) {
   const user = await requireUser(c);
+  await assertAllowed(c, user, 'profile');
   const kind = c.params.kind;
   if (!MEDIA_RULES[kind]) throw fail(404, 'not_found', 'Unknown image kind');
   const rows = await c.env.DB.prepare('SELECT id, size_bytes FROM media WHERE owner_id = ? AND kind = ?').bind(user.id, kind).all();

@@ -60,8 +60,16 @@ MESSAGES = {
 }
 
 
-def assess(frames: list[dict], credits: dict | None = None, *, logos: bool = True) -> tuple[list, dict]:
+# Sensitivity chosen by the owner in the panel: multiplies every threshold (strict flags more, relaxed less).
+SENSITIVITY = {"relaxed": 1.25, "normal": 1.0, "strict": 0.75}
+
+
+def assess(frames: list[dict], credits: dict | None = None, *, logos: bool = True, sensitivity: str = "normal") -> tuple[list, dict]:
     """frames: [{"unsafe": {group: prob}, "logo": {label: prob}}] → (findings, detected)."""
+    factor = SENSITIVITY.get(sensitivity, 1.0)
+    nudity_threshold = min(0.95, NUDITY_THRESHOLD * factor)
+    strong = min(0.95, UNSAFE_STRONG * factor)
+    repeated = min(0.9, UNSAFE_REPEATED * factor)
     findings: list = []
     detected: dict = {}
     worst: dict = {}
@@ -69,12 +77,12 @@ def assess(frames: list[dict], credits: dict | None = None, *, logos: bool = Tru
     for frame in frames:
         for group, prob in frame.get("unsafe", {}).items():
             worst[group] = max(worst.get(group, 0.0), prob)
-            if prob >= UNSAFE_REPEATED:
+            if prob >= repeated:
                 over[group] = over.get(group, 0) + 1
     for group in ("nudity", *UNSAFE):
         prob = worst.get(group, 0.0)
-        flagged = prob >= NUDITY_THRESHOLD if group == "nudity" else (
-            prob >= UNSAFE_STRONG or over.get(group, 0) >= UNSAFE_REPEATED_FRAMES)
+        flagged = prob >= nudity_threshold if group == "nudity" else (
+            prob >= strong or over.get(group, 0) >= UNSAFE_REPEATED_FRAMES)
         if flagged:
             findings.append({"code": f"possible_{group}", "severity": 2, "message": MESSAGES[group].format(p=round(prob * 100))})
 

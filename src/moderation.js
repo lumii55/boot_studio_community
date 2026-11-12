@@ -12,6 +12,8 @@ import { fail, json, readJson } from './lib/http.js';
 import { cleanText, decodeCursor, encodeCursor, HANDLE_RE, newId, requireId } from './lib/util.js';
 import { animationKey, mediaKey, previewKey, releaseStorageStatement } from './storage.js';
 import { notifyStatement, publishedNotifications } from './notifications.js';
+import { CASE_ACTION_PERMISSION, cleanPermissions, PERMISSIONS, permissionsOf, requirePermission } from './permissions.js';
+import { applySanction } from './sanctions.js';
 import { mediaUrl } from './views.js';
 
 export const TAB_SQL = {
@@ -206,6 +208,7 @@ async function rejectMedia(c, media, { caseId = null, actorId = null, source = '
 export async function performCaseAction(c, caseRow, actor, source, action, reason = '') {
   if (caseRow.status !== 'open') throw fail(409, 'case_closed', 'This case was already decided');
   if (!(ACTIONS[caseRow.target_type] || []).includes(action)) throw fail(400, 'invalid_action', 'Action not available here');
+  requirePermission(actor, CASE_ACTION_PERMISSION[action]);
   const db = c.env.DB;
   const target = { caseId: caseRow.id, targetType: caseRow.target_type, targetId: caseRow.target_id, actorId: actor.id, source };
   const closeCase = db.prepare("UPDATE cases SET status = 'closed', resolution = ?, updated_at = ? WHERE id = ?")
@@ -216,18 +219,12 @@ export async function performCaseAction(c, caseRow, actor, source, action, reaso
     const ownerId = await ownerOfTarget(c, caseRow);
     if (!ownerId) throw fail(404, 'not_found', 'Target no longer exists');
     if (ownerId === actor.id) throw fail(400, 'invalid_action', 'You cannot ban yourself');
-    const victim = await db.prepare('SELECT role FROM users WHERE id = ?').bind(ownerId).first();
+    const victim = await db.prepare('SELECT * FROM users WHERE id = ?').bind(ownerId).first();
     if (victim && victim.role === 'owner') throw fail(403, 'forbidden', 'The owner cannot be banned');
-    await db.batch([
-      db.prepare("UPDATE users SET status = 'banned', updated_at = ? WHERE id = ?").bind(c.now, ownerId),
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(ownerId),
-      db.prepare(
-        `UPDATE animations SET status = 'hidden', status_reason = 'Account banned', updated_at = ?
-         WHERE owner_id = ? AND status IN ('published', 'review', 'scanning')`,
-      ).bind(c.now, ownerId),
-      closeCase,
-      log,
-    ]);
+    // A ban from a case is the same permanent ban as from the person's file (recorded as a punishment).
+    await applySanction(c, actor, victim, { kind: 'ban', reason: reason || 'Banned from a case', days: null, restrictions: [], hideUploads: false },
+      { source, caseId: caseRow.id });
+    await closeCase.run();
     return;
   }
 
@@ -442,13 +439,37 @@ export async function caseAction(c) {
 
 export async function audit(c) {
   await requireModerator(c);
-  const cursor = decodeCursor(c.url.searchParams.get('cursor'), 2);
+  const params = c.url.searchParams;
+  const where = [];
+  const binds = [];
+  // Filters: who did it (actor handle), what (action prefix) and about whom (person handle: their profile or uploads).
+  const actor = (params.get('actor') || '').trim().toLowerCase().replace(/^@/, '');
+  if (actor) {
+    where.push('u.handle = ?');
+    binds.push(actor);
+  }
+  const action = (params.get('action') || '').trim();
+  if (/^[a-z_]{1,40}$/.test(action)) {
+    where.push('m.action LIKE ?');
+    binds.push(`${action}%`);
+  }
+  const person = (params.get('person') || '').trim().toLowerCase().replace(/^@/, '');
+  if (person) {
+    where.push(`((m.target_type = 'user' AND m.target_id = (SELECT id FROM users WHERE handle = ?))
+      OR (m.target_type = 'animation' AND m.target_id IN (SELECT a.id FROM animations a JOIN users p ON p.id = a.owner_id WHERE p.handle = ?)))`);
+    binds.push(person, person);
+  }
+  const cursor = decodeCursor(params.get('cursor'), 2);
+  if (cursor) {
+    where.push('(m.created_at, m.rowid) < (?, ?)');
+    binds.push(...cursor);
+  }
   const rows = await c.env.DB.prepare(
     `SELECT m.rowid AS seq, m.id, m.case_id, m.target_type, m.target_id, m.source, m.action, m.reason, m.created_at, u.handle AS actor
      FROM mod_actions m LEFT JOIN users u ON u.id = m.actor_id
-     ${cursor ? 'WHERE (m.created_at, m.rowid) < (?, ?)' : ''} ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?`,
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?`,
   )
-    .bind(...(cursor || []), LIMITS.pageSize + 1)
+    .bind(...binds, LIMITS.pageSize + 1)
     .all();
   const page = rows.results.slice(0, LIMITS.pageSize);
   const last = page[page.length - 1];
@@ -461,9 +482,12 @@ export async function audit(c) {
 export async function team(c) {
   await requireModerator(c);
   const rows = await c.env.DB.prepare(
-    "SELECT handle, display_name, role, discord_id IS NOT NULL AS discord_linked FROM users WHERE role <> 'user' AND status = 'active' ORDER BY role DESC, handle",
+    "SELECT handle, display_name, role, permissions, discord_id IS NOT NULL AS discord_linked FROM users WHERE role <> 'user' AND status = 'active' ORDER BY role DESC, handle",
   ).all();
-  return json({ items: rows.results.map((row) => ({ ...row, discord_linked: !!row.discord_linked })) });
+  return json({
+    permissions: PERMISSIONS,
+    items: rows.results.map((row) => ({ ...row, permissions: permissionsOf(row), discord_linked: !!row.discord_linked })),
+  });
 }
 
 // Owner-only team management: promote moderators and link their Discord accounts (for the bot buttons).
@@ -473,12 +497,29 @@ export async function setRole(c) {
   const handle = String(c.params.handle || '').toLowerCase();
   if (!HANDLE_RE.test(handle)) throw fail(404, 'not_found', 'Unknown user');
   if (!['user', 'moderator'].includes(body.role)) throw fail(400, 'invalid_role', 'Role must be user or moderator');
-  const row = await c.env.DB.prepare("UPDATE users SET role = ?, updated_at = ? WHERE handle = ? AND role <> 'owner' RETURNING id")
-    .bind(body.role, c.now, handle)
+  // New moderators start with no permissions unless some are given; leaving the team clears them.
+  const permissions = body.role === 'moderator' && body.permissions !== undefined ? cleanPermissions(body.permissions) : [];
+  const row = await c.env.DB.prepare(
+    `UPDATE users SET role = ?, permissions = CASE WHEN ? = 'moderator' AND role = 'moderator' AND ? = 0 THEN permissions ELSE ? END,
+       updated_at = ? WHERE handle = ? AND role <> 'owner' RETURNING id`,
+  )
+    .bind(body.role, body.role, body.permissions !== undefined ? 1 : 0, JSON.stringify(permissions), c.now, handle)
     .first();
   if (!row) throw fail(404, 'not_found', 'Unknown user');
   await logAction(c, { targetType: 'user', targetId: row.id, actorId: owner.id, source: 'panel', action: `role_${body.role}` }).run();
   return json({ ok: true });
+}
+
+export async function setPermissions(c) {
+  const owner = await requireOwner(c);
+  const body = await readJson(c.request, LIMITS.jsonBodyBytes);
+  const handle = String(c.params.handle || '').toLowerCase();
+  const permissions = cleanPermissions(body.permissions);
+  const row = await c.env.DB.prepare("UPDATE users SET permissions = ?, updated_at = ? WHERE handle = ? AND role = 'moderator' RETURNING id")
+    .bind(JSON.stringify(permissions), c.now, handle).first();
+  if (!row) throw fail(404, 'not_found', 'Not a moderator');
+  await logAction(c, { targetType: 'user', targetId: row.id, actorId: owner.id, source: 'panel', action: 'permissions', reason: permissions.join(', ') }).run();
+  return json({ ok: true, permissions });
 }
 
 export async function setDiscord(c) {

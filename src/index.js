@@ -9,6 +9,8 @@ import { corsHeaders, errorResponse, fail, json, withHeaders } from './lib/http.
 import { Router } from './lib/router.js';
 import * as moderation from './moderation.js';
 import * as notifications from './notifications.js';
+import * as panel from './panel.js';
+import { getSettings } from './settings.js';
 import * as pipeline from './pipeline.js';
 import { createReport } from './reports.js';
 import { runScheduled } from './scheduled.js';
@@ -24,8 +26,9 @@ async function publicConfig(c) {
       api_version: API_VERSION,
       turnstile_site_key: c.env.TURNSTILE_SITE_KEY || null,
       uploads_open: !storage.paused,
+      announcement: await panel.getAnnouncement(c.env),
       limits: {
-        animation_bytes: LIMITS.animationBytes,
+        animation_bytes: Math.min(LIMITS.animationBytes, (await getSettings(c.env)).max_animation_mb * 1024 * 1024),
         avatar_bytes: LIMITS.avatarBytes,
         banner_bytes: LIMITS.bannerBytes,
         title_max: LIMITS.titleMax,
@@ -91,6 +94,21 @@ export const router = new Router()
   .on('GET', '/v1/mod/stats', admin.stats)
   .on('PUT', '/v1/mod/settings/uploads', admin.setUploadsPaused)
   .on('GET', '/v1/mod/users', admin.listUsers)
+  .on('GET', '/v1/mod/users/:handle', panel.personFile)
+  .on('GET', '/v1/mod/users/:handle/export', panel.exportPerson)
+  .on('POST', '/v1/mod/users/:handle/sanctions', panel.createSanction)
+  .on('POST', '/v1/mod/sanctions/:id/revoke', panel.liftSanction)
+  .on('PUT', '/v1/mod/users/:handle/permissions', moderation.setPermissions)
+  .on('GET', '/v1/mod/notes', panel.listNotes)
+  .on('POST', '/v1/mod/notes', panel.addNote)
+  .on('DELETE', '/v1/mod/notes/:id', panel.deleteNote)
+  .on('GET', '/v1/mod/reporters', panel.reporters)
+  .on('GET', '/v1/mod/timeseries', panel.timeseries)
+  .on('POST', '/v1/mod/cases/bulk', panel.bulkCases)
+  .on('PUT', '/v1/mod/announcement', panel.setAnnouncement)
+  .on('POST', '/v1/mod/recheck-all', panel.recheckAll)
+  .on('GET', '/v1/mod/settings', panel.readSettings)
+  .on('PUT', '/v1/mod/settings', panel.writeSettings)
   .on('POST', '/v1/mod/users/:handle/action', admin.userAction)
   .on('GET', '/v1/mod/animations', admin.listAnimations)
   .on('POST', '/v1/mod/animations/:id/action', admin.animationAction)

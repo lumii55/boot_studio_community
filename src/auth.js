@@ -60,6 +60,9 @@ export async function githubCallback(c) {
 
   const user = await upsertUser(c, profile);
   if (user.status === 'banned') return siteRedirect(c.env, 'bas-auth-error=banned');
+  if (user.suspended_until && user.suspended_until > c.now) {
+    return siteRedirect(c.env, `bas-auth-error=suspended&until=${user.suspended_until}`);
+  }
 
   const grant = randomToken(32);
   await c.env.DB.prepare('INSERT INTO auth_grants (code_hash, user_id, expires_at) VALUES (?, ?, ?)')
@@ -130,7 +133,7 @@ async function upsertUser(c, profile) {
       .run();
   }
   // Trust is earned when a moderator approves an upload (moderation.js), never from account age alone.
-  return db.prepare('SELECT id, status FROM users WHERE github_id = ?').bind(profile.id).first();
+  return db.prepare('SELECT id, status, suspended_until FROM users WHERE github_id = ?').bind(profile.id).first();
 }
 
 export async function exchangeGrant(c) {
@@ -173,7 +176,7 @@ export async function currentUser(c) {
   )
     .bind(hash, c.now)
     .first();
-  if (user && user.status === 'active') c.user = user;
+  if (user && user.status === 'active' && !(user.suspended_until && user.suspended_until > c.now)) c.user = user;
   return c.user;
 }
 

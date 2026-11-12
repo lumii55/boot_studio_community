@@ -8,6 +8,7 @@ import { sniffImage } from './lib/images.js';
 import { verifyActionsToken } from './lib/oidc.js';
 import { newId, requireId } from './lib/util.js';
 import { applyAnimationVerdict, applyMediaVerdict, applyProfileVerdict } from './moderation.js';
+import { getSettings } from './settings.js';
 import { animationKey, mediaKey, previewKey } from './storage.js';
 
 export async function queueJob(c, kind, subjectId) {
@@ -54,6 +55,14 @@ export async function dispatchJob(env, jobId, now) {
     .bind(ok ? 1 : 0, now, jobId)
     .run();
   return ok;
+}
+
+// "Re-check everything" queues jobs without starting them; the cron starts a few per run (GitHub runs them in turn).
+export async function dispatchQueued(c, limit = 10) {
+  const rows = await c.env.DB.prepare("SELECT id FROM pipeline_jobs WHERE status = 'queued' AND attempts = 0 ORDER BY created_at LIMIT ?")
+    .bind(limit).all();
+  for (const row of rows.results) await dispatchJob(c.env, row.id, c.now);
+  return rows.results.length;
 }
 
 // Called by the scheduled handler: retry jobs that never started or got stuck; give up after a few tries.
@@ -117,7 +126,8 @@ export async function getJob(c) {
     if (!row) throw fail(404, 'subject_gone', 'The user no longer exists');
     subject = { ...row, links: JSON.parse(row.links) };
   }
-  return json({ job: { id: job.id, kind: job.kind }, subject });
+  const { detector } = await getSettings(c.env);
+  return json({ job: { id: job.id, kind: job.kind }, subject, sensitivity: detector });
 }
 
 export async function getJobFile(c) {

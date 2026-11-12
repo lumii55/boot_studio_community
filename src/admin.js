@@ -6,7 +6,9 @@ import { fail, json, readJson } from './lib/http.js';
 import { cleanText, decodeCursor, encodeCursor, HANDLE_RE, requireId } from './lib/util.js';
 import { logAction } from './moderation.js';
 import { notifyStatement, publishedNotifications } from './notifications.js';
+import { ANIMATION_ACTION_PERMISSION, can, requirePermission } from './permissions.js';
 import { queueJob } from './pipeline.js';
+import { applySanction, revokeSanction } from './sanctions.js';
 import { animationKey, previewKey, releaseStorageStatement, storageStatus } from './storage.js';
 import { animationCard, OWNER_COLUMNS } from './views.js';
 
@@ -96,43 +98,66 @@ export async function listUsers(c) {
   });
 }
 
-const USER_ACTIONS = new Set(['ban', 'unban', 'trust', 'untrust']);
+const USER_ACTIONS = new Set(['ban', 'unban', 'trust', 'untrust', 'clear_profile']);
 
+// Shortcuts kept from the first panel: ban/unban are punishments like any other; trust is a setting of the person.
 export async function userAction(c) {
   const actor = await requireModerator(c);
   const body = await readJson(c.request, LIMITS.jsonBodyBytes);
   const action = String(body.action || '');
   if (!USER_ACTIONS.has(action)) throw fail(400, 'invalid_action', 'Unknown action');
   const reason = cleanText(body.reason, { field: 'reason', max: LIMITS.reasonMax, multiline: true });
-  const handle = String(c.params.handle || '').toLowerCase();
-  if (!HANDLE_RE.test(handle)) throw fail(404, 'not_found', 'Unknown user');
-  const db = c.env.DB;
-  const target = await db.prepare('SELECT * FROM users WHERE handle = ?').bind(handle).first();
-  if (!target) throw fail(404, 'not_found', 'Unknown user');
-  if (target.id === actor.id) throw fail(400, 'invalid_action', 'Not on yourself');
-  if (target.role === 'owner') throw fail(403, 'forbidden', 'Not on the owner');
-  if (target.role === 'moderator' && actor.role !== 'owner') throw fail(403, 'forbidden', 'Only the owner can act on moderators');
-  const log = logAction(c, { targetType: 'user', targetId: target.id, actorId: actor.id, source: 'panel', action: `user_${action}`, reason });
-  const statements = [log];
+  const target = await personByHandle(c, c.params.handle);
   if (action === 'ban') {
-    statements.push(
-      db.prepare("UPDATE users SET status = 'banned', updated_at = ? WHERE id = ?").bind(c.now, target.id),
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target.id),
-      db.prepare("UPDATE animations SET status = 'hidden', status_reason = 'Account banned', updated_at = ? WHERE owner_id = ? AND status IN ('published', 'review', 'scanning')")
-        .bind(c.now, target.id),
-    );
-  } else if (action === 'unban') {
-    // Uploads hidden by the ban come back; other hidden items stay as they are.
-    statements.push(
-      db.prepare("UPDATE users SET status = 'active', updated_at = ? WHERE id = ?").bind(c.now, target.id),
-      db.prepare(`UPDATE animations SET status = CASE WHEN published_at IS NULL THEN 'review' ELSE 'published' END, status_reason = '', updated_at = ?
-                  WHERE owner_id = ? AND status = 'hidden' AND status_reason = 'Account banned'`).bind(c.now, target.id),
-    );
-  } else {
-    statements.push(db.prepare('UPDATE users SET trust = ?, updated_at = ? WHERE id = ?').bind(action === 'trust' ? 1 : 0, c.now, target.id));
+    await applySanction(c, actor, target, { kind: 'ban', reason: reason || 'Banned', days: null, restrictions: [], hideUploads: false });
+    return json({ ok: true });
   }
-  await db.batch(statements);
+  if (action === 'unban') {
+    requirePermission(actor, 'ban');
+    const bans = await c.env.DB.prepare("SELECT id FROM sanctions WHERE user_id = ? AND kind = 'ban' AND revoked_at IS NULL").bind(target.id).all();
+    for (const ban of bans.results) await revokeSanction(c, actor, ban.id, reason);
+    if (!bans.results.length && target.status === 'banned') {
+      // Banned before punishments existed: lift it directly.
+      await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE users SET status = 'active', updated_at = ? WHERE id = ?").bind(c.now, target.id),
+        c.env.DB.prepare("UPDATE animations SET status = CASE WHEN published_at IS NULL THEN 'review' ELSE 'published' END, status_reason = '', updated_at = ? WHERE owner_id = ? AND status = 'hidden' AND status_reason = 'Account banned'")
+          .bind(c.now, target.id),
+        logAction(c, { targetType: 'user', targetId: target.id, actorId: actor.id, source: 'panel', action: 'revoke_ban', reason }),
+      ]);
+    }
+    return json({ ok: true });
+  }
+  if (action === 'clear_profile') {
+    requirePermission(actor, 'clear_profile');
+    if (target.id === actor.id || target.role === 'owner') throw fail(403, 'forbidden', 'Not on this person');
+    if (target.role === 'moderator' && actor.role !== 'owner') throw fail(403, 'forbidden', 'Only the owner can act on moderators');
+    const media = await c.env.DB.prepare('SELECT id, size_bytes FROM media WHERE owner_id = ?').bind(target.id).all();
+    await c.env.DB.batch([
+      c.env.DB.prepare(`UPDATE users SET display_name = handle, bio = '', links = '[]', avatar_media_id = NULL, banner_media_id = NULL, updated_at = ?
+                        WHERE id = ?`).bind(c.now, target.id),
+      c.env.DB.prepare('DELETE FROM media WHERE owner_id = ?').bind(target.id),
+      releaseStorageStatement(c.env, media.results.reduce((sum, item) => sum + item.size_bytes, 0)),
+      logAction(c, { targetType: 'user', targetId: target.id, actorId: actor.id, source: 'panel', action: 'clear_profile', reason }),
+    ]);
+    if (media.results.length) await c.env.FILES.delete(media.results.map((item) => `media/${item.id}`));
+    return json({ ok: true });
+  }
+  requirePermission(actor, 'trust');
+  if (target.id === actor.id || target.role === 'owner') throw fail(403, 'forbidden', 'Not on this person');
+  if (target.role === 'moderator' && actor.role !== 'owner') throw fail(403, 'forbidden', 'Only the owner can act on moderators');
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET trust = ?, updated_at = ? WHERE id = ?').bind(action === 'trust' ? 1 : 0, c.now, target.id),
+    logAction(c, { targetType: 'user', targetId: target.id, actorId: actor.id, source: 'panel', action: `user_${action}`, reason }),
+  ]);
   return json({ ok: true });
+}
+
+async function personByHandle(c, raw) {
+  const handle = String(raw || '').toLowerCase();
+  if (!HANDLE_RE.test(handle)) throw fail(404, 'not_found', 'Unknown user');
+  const user = await c.env.DB.prepare('SELECT * FROM users WHERE handle = ?').bind(handle).first();
+  if (!user) throw fail(404, 'not_found', 'Unknown user');
+  return user;
 }
 
 const ANIMATION_STATUSES = new Set(['published', 'review', 'scanning', 'hidden', 'rejected', 'featured']);
@@ -172,6 +197,7 @@ export async function animationAction(c) {
   const body = await readJson(c.request, LIMITS.jsonBodyBytes);
   const action = String(body.action || '');
   if (!ANIMATION_ACTIONS.has(action)) throw fail(400, 'invalid_action', 'Unknown action');
+  requirePermission(actor, ANIMATION_ACTION_PERMISSION[action]);
   const reason = cleanText(body.reason, { field: 'reason', max: LIMITS.reasonMax, multiline: true });
   const db = c.env.DB;
   const row = await db.prepare('SELECT * FROM animations WHERE id = ?').bind(requireId(c.params.id, 'animation')).first();

@@ -7,11 +7,11 @@ import { json } from './lib/http.js';
 import { decodeCursor, encodeCursor, newId } from './lib/util.js';
 import { userCard } from './views.js';
 
-export function notifyStatement(c, { userId, kind, actorId = null, animationId = null, reason = '' }) {
+export function notifyStatement(c, { userId, kind, actorId = null, animationId = null, reason = '', data = {} }) {
   return c.env.DB.prepare(
-    `INSERT INTO notifications (id, user_id, kind, actor_id, animation_id, reason, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(newId(), userId, kind, actorId, animationId, String(reason).slice(0, 300), c.now);
+    `INSERT INTO notifications (id, user_id, kind, actor_id, animation_id, reason, data, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(newId(), userId, kind, actorId, animationId, String(reason).slice(0, 500), JSON.stringify(data), c.now);
 }
 
 // Statements for the first publication of an animation: tell its owner, and the original's owner for a remix.
@@ -48,6 +48,7 @@ export async function list(c) {
       read: !!row.read_at,
       created_at: row.created_at,
       reason: row.reason,
+      data: JSON.parse(row.data || '{}'),
       actor: row.a_handle ? userCard(c.env, row, 'a_') : null,
       animation: row.animation_id && row.an_title ? {
         id: row.animation_id,

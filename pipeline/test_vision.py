@@ -42,6 +42,13 @@ class Policy(unittest.TestCase):
         findings, _ = vision.assess([frame(logo=logo)], {"animation_by": "self", "art_by": "Brand logo by its maker"})
         self.assertEqual(findings, [])
 
+    def test_sensitivity_moves_the_thresholds(self):
+        borderline = [frame({"nudity": 0.5})]
+        self.assertEqual(vision.assess(borderline)[0], [])
+        self.assertEqual([item["code"] for item in vision.assess(borderline, sensitivity="strict")[0]], ["possible_nudity"])
+        self.assertEqual(vision.assess([frame({"nudity": 0.7})], sensitivity="relaxed")[0], [])
+        self.assertEqual(vision.assess(borderline, sensitivity="nonsense")[0], [])
+
     def test_media_skips_logos(self):
         findings, detected = vision.assess([frame(logo={"the Apple logo": 0.99})], logos=False)
         self.assertEqual((findings, detected), ([], {}))
