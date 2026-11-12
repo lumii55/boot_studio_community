@@ -62,6 +62,7 @@ export function animationCard(env, row) {
     rating: ratingOf(row),
     tags: JSON.parse(row.tags || '[]'),
     published_at: row.published_at,
+    featured: !!row.featured_at,
   };
 }
 

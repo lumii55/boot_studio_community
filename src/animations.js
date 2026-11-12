@@ -143,6 +143,7 @@ const FEEDS = {
   new: { order: 'a.published_at DESC, a.id DESC', keys: ['published_at', 'id'], cmp: '(a.published_at, a.id) < (?, ?)' },
   top: { order: 'a.score DESC, a.id DESC', keys: ['score', 'id'], cmp: '(a.score, a.id) < (?, ?)' },
   trending: { order: 'a.trending DESC, a.id DESC', keys: ['trending', 'id'], cmp: '(a.trending, a.id) < (?, ?)' },
+  featured: { order: 'a.featured_at DESC, a.id DESC', keys: ['featured_at', 'id'], cmp: '(a.featured_at, a.id) < (?, ?)' },
 };
 
 function likePattern(text) {
@@ -160,6 +161,7 @@ export async function list(c) {
   const where = ["a.status = 'published'", "o.status = 'active'"];
   const binds = [];
 
+  if (feedName === 'featured') where.push('a.featured_at IS NOT NULL');
   if (following) {
     const viewer = await requireUser(c);
     where.push('a.owner_id IN (SELECT followee_id FROM follows WHERE follower_id = ?)');

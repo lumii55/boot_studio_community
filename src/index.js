@@ -1,5 +1,6 @@
 // Boot Animation Studio community API (Cloudflare Worker).
 
+import * as admin from './admin.js';
 import * as animations from './animations.js';
 import * as auth from './auth.js';
 import { LICENSES, LIMITS, REPORT_CATEGORIES } from './config.js';
@@ -34,6 +35,7 @@ async function publicConfig(c) {
         links_max: LIMITS.linksMax,
       },
       licenses: LICENSES,
+      featured: (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM animations WHERE status = 'published' AND featured_at IS NOT NULL").first()).n,
       report_categories: Object.keys(REPORT_CATEGORIES),
     },
     200,
@@ -86,6 +88,12 @@ export const router = new Router()
   .on('GET', '/v1/mod/cases/:id', moderation.caseDetail)
   .on('POST', '/v1/mod/cases/:id/action', moderation.caseAction)
   .on('GET', '/v1/mod/team', moderation.team)
+  .on('GET', '/v1/mod/stats', admin.stats)
+  .on('PUT', '/v1/mod/settings/uploads', admin.setUploadsPaused)
+  .on('GET', '/v1/mod/users', admin.listUsers)
+  .on('POST', '/v1/mod/users/:handle/action', admin.userAction)
+  .on('GET', '/v1/mod/animations', admin.listAnimations)
+  .on('POST', '/v1/mod/animations/:id/action', admin.animationAction)
   .on('PUT', '/v1/mod/users/:handle/role', moderation.setRole)
   .on('PUT', '/v1/mod/users/:handle/discord', moderation.setDiscord)
   // automatic checks (GitHub Actions, OIDC) and the Discord bot
