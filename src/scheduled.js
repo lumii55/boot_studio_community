@@ -3,6 +3,7 @@
 import { DRAFT_TTL_MS } from './config.js';
 import { utcDay } from './lib/util.js';
 import { dispatchQueued, retryStaleJobs } from './pipeline.js';
+import { fillSearchText } from './lib/search.js';
 import { expireSanctions } from './sanctions.js';
 
 const TRENDING_DAYS = 7;
@@ -29,6 +30,7 @@ export async function runScheduled(c) {
     ).bind(today, TRENDING_DAYS),
   ]);
   await expireSanctions(c);
+  await fillSearchText(c);
   await dispatchQueued(c);
   await retryStaleJobs(c);
 }

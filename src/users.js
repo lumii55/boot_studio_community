@@ -5,6 +5,7 @@ import { LIMITS, RATE, RATING_PRIOR_MEAN as RATING_MEAN, RATING_PRIOR_WEIGHT as 
 import { fail, json, readBytes, readJson } from './lib/http.js';
 import { sniffImage } from './lib/images.js';
 import { rateLimit } from './lib/ratelimit.js';
+import { personSearchText } from './lib/search.js';
 import { cleanLinks, cleanText, decodeCursor, encodeCursor, HANDLE_RE, newId, requireId } from './lib/util.js';
 import { notifyStatement } from './notifications.js';
 import { queueJob } from './pipeline.js';
@@ -37,8 +38,8 @@ export async function updateProfile(c) {
     bio: body.bio === undefined ? user.bio : cleanText(body.bio, { field: 'bio', max: LIMITS.bioMax, multiline: true }),
     links: body.links === undefined ? user.links : JSON.stringify(cleanLinks(body.links, LIMITS)),
   };
-  await c.env.DB.prepare('UPDATE users SET display_name = ?, bio = ?, links = ?, updated_at = ? WHERE id = ?')
-    .bind(next.display_name, next.bio, next.links, c.now, user.id)
+  await c.env.DB.prepare('UPDATE users SET display_name = ?, bio = ?, links = ?, search_name = ?, updated_at = ? WHERE id = ?')
+    .bind(next.display_name, next.bio, next.links, personSearchText({ handle: user.handle, display_name: next.display_name }), c.now, user.id)
     .run();
   const textChanged = next.display_name !== user.display_name || next.bio !== user.bio || next.links !== user.links;
   // Text is visible right away and checked afterwards (never punished automatically).

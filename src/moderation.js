@@ -9,6 +9,7 @@ import { isModerator, requireModerator, requireOwner } from './auth.js';
 import { LIMITS, NEW_ACCOUNT_DAYS } from './config.js';
 import { notifyCase } from './discord.js';
 import { fail, json, readJson } from './lib/http.js';
+import { personSearchText } from './lib/search.js';
 import { cleanText, decodeCursor, encodeCursor, HANDLE_RE, newId, requireId } from './lib/util.js';
 import { animationKey, mediaKey, previewKey, releaseStorageStatement } from './storage.js';
 import { notifyStatement, publishedNotifications } from './notifications.js';
@@ -285,8 +286,8 @@ export async function performCaseAction(c, caseRow, actor, source, action, reaso
     await db.batch([
       db.prepare(
         `UPDATE users SET display_name = handle, bio = '', links = '[]', avatar_media_id = NULL, banner_media_id = NULL,
-         updated_at = ? WHERE id = ?`,
-      ).bind(c.now, user.id),
+         search_name = ?, updated_at = ? WHERE id = ?`,
+      ).bind(personSearchText({ handle: user.handle, display_name: user.handle }), c.now, user.id),
       db.prepare('DELETE FROM media WHERE owner_id = ?').bind(user.id),
       releaseStorageStatement(c.env, freed),
       closeCase,

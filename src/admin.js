@@ -3,6 +3,7 @@
 import { requireModerator, requireOwner } from './auth.js';
 import { LIMITS } from './config.js';
 import { fail, json, readJson } from './lib/http.js';
+import { personSearchText } from './lib/search.js';
 import { cleanText, decodeCursor, encodeCursor, HANDLE_RE, requireId } from './lib/util.js';
 import { logAction } from './moderation.js';
 import { notifyStatement, publishedNotifications } from './notifications.js';
@@ -133,8 +134,8 @@ export async function userAction(c) {
     if (target.role === 'moderator' && actor.role !== 'owner') throw fail(403, 'forbidden', 'Only the owner can act on moderators');
     const media = await c.env.DB.prepare('SELECT id, size_bytes FROM media WHERE owner_id = ?').bind(target.id).all();
     await c.env.DB.batch([
-      c.env.DB.prepare(`UPDATE users SET display_name = handle, bio = '', links = '[]', avatar_media_id = NULL, banner_media_id = NULL, updated_at = ?
-                        WHERE id = ?`).bind(c.now, target.id),
+      c.env.DB.prepare(`UPDATE users SET display_name = handle, bio = '', links = '[]', avatar_media_id = NULL, banner_media_id = NULL,
+                        search_name = ?, updated_at = ? WHERE id = ?`).bind(personSearchText({ handle: target.handle, display_name: target.handle }), c.now, target.id),
       c.env.DB.prepare('DELETE FROM media WHERE owner_id = ?').bind(target.id),
       releaseStorageStatement(c.env, media.results.reduce((sum, item) => sum + item.size_bytes, 0)),
       logAction(c, { targetType: 'user', targetId: target.id, actorId: actor.id, source: 'panel', action: 'clear_profile', reason }),

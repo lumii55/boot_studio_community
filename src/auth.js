@@ -7,6 +7,7 @@
 import { GRANT_SECONDS, LIMITS, OAUTH_STATE_MINUTES, RATE, SESSION_DAYS } from './config.js';
 import { fail, json, readJson, redirect } from './lib/http.js';
 import { clientIp, rateLimit } from './lib/ratelimit.js';
+import { personSearchText } from './lib/search.js';
 import { newId, randomToken, sha256Hex } from './lib/util.js';
 
 const RETURN_RE = /^#[A-Za-z0-9/_-]{0,100}$/;
@@ -109,13 +110,14 @@ async function upsertUser(c, profile) {
   const displayName = String(profile.name || profile.login).slice(0, LIMITS.displayNameMax);
 
   // A GitHub login can move to another account after a rename: free the handle first.
-  await db.prepare("UPDATE users SET handle = 'gh-' || github_id WHERE handle = ? AND github_id <> ?")
+  await db.prepare("UPDATE users SET handle = 'gh-' || github_id, search_name = NULL WHERE handle = ? AND github_id <> ?")
     .bind(handle, profile.id)
     .run();
   await db.prepare(
-    `INSERT INTO users (id, github_id, handle, display_name, github_avatar_url, role, trust, github_created_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO users (id, github_id, handle, display_name, github_avatar_url, role, trust, github_created_at, created_at, updated_at, search_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (github_id) DO UPDATE SET
+       search_name = CASE WHEN users.handle = excluded.handle THEN users.search_name ELSE NULL END,
        handle = excluded.handle,
        github_avatar_url = excluded.github_avatar_url,
        github_created_at = excluded.github_created_at,
@@ -123,7 +125,7 @@ async function upsertUser(c, profile) {
        updated_at = excluded.updated_at`,
   )
     .bind(newId(), profile.id, handle, displayName, avatar, isOwner ? 'owner' : 'user', isOwner ? 2 : 0,
-      createdAt, c.now, c.now, isOwner ? 1 : 0)
+      createdAt, c.now, c.now, personSearchText({ handle, display_name: displayName }), isOwner ? 1 : 0)
     .run();
   // The owner's Discord account is linked from the configuration, so the bot buttons work from day one.
   const ownerDiscord = String(c.env.OWNER_DISCORD_ID || '');

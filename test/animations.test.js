@@ -161,6 +161,53 @@ test('feeds: filters, search, pagination and the following feed', async () => {
   assert.equal((await h.request('GET', `/v1/animations/${ids[0]}`, { token: fan.token })).data.owner_followed_by_me, true);
 });
 
+test('search ignores accents and case, finds tags, descriptions and authors; @ searches authors only', async () => {
+  const h = createHarness();
+  const sign = await oidcSigner(h);
+  const owner = await h.signIn('lumii55', { id: OWNER_GITHUB_ID });
+  const maker = await h.signIn('pixelmaker', { name: 'Ana Ribeirão' });
+  const publish = async (who, extra) => {
+    const id = await uploadAnimation(h, who.token, extra);
+    await finishJob(h, sign, lastJob(h, 'animation', id).id, CLEAN);
+    if (who !== owner) {
+      const caseRow = h.db.row("SELECT id FROM cases WHERE target_id = ? AND status = 'open'", id);
+      await h.request('POST', `/v1/mod/cases/${caseRow.id}/action`, { token: owner.token, json: { action: 'approve' } });
+    }
+    return id;
+  };
+  const yonka = await publish(owner, { title: 'YonKaGor tribute', tags: ['music'] });
+  const tagged = await publish(owner, { title: 'Random name', tags: ['yonkagor'] });
+  const accented = await publish(owner, { title: 'Animação Ç', extra: { description: 'Feita à mão com Pokémon' } });
+  const theirs = await publish(maker, { title: 'Neon wave', tags: ['neon'] });
+  const search = async (q) => (await h.request('GET', `/v1/animations?feed=new&q=${encodeURIComponent(q)}`)).data.items.map((item) => item.id).sort();
+  assert.deepEqual(await search('yonkagor'), [yonka, tagged].sort());
+  assert.deepEqual(await search('YONKA'), [yonka, tagged].sort());
+  assert.deepEqual(await search('animacao'), [accented]);
+  assert.deepEqual(await search('ANIMAÇÃO ç'), [accented]);
+  assert.deepEqual(await search('pokemon'), [accented]);           // description
+  assert.deepEqual(await search('ribeirao'), [theirs]);            // author's display name
+  assert.deepEqual(await search('pixelmaker'), [theirs]);          // author's handle
+  assert.deepEqual(await search('@pixel'), [theirs]);              // authors only
+  assert.deepEqual(await search('@neon'), []);                     // "@" does not search titles or tags
+  assert.deepEqual(await search('%'), []);
+
+  // Renaming yourself is searchable right away; clearing a profile removes the old name.
+  await h.request('PATCH', '/v1/me', { token: maker.token, json: { display_name: 'Estúdio Lua' } });
+  assert.deepEqual(await search('estudio'), [theirs]);
+  assert.deepEqual(await search('ribeirao'), []);
+
+  // Rows from before the search text existed still match (fallback) and the cron fills them in.
+  h.db.sqlite.prepare('UPDATE animations SET search_text = NULL').run();
+  h.db.sqlite.prepare('UPDATE users SET search_name = NULL').run();
+  assert.deepEqual(await search('yonkagor'), [yonka, tagged].sort());
+  assert.deepEqual(await search('@pixelmaker'), [theirs]);
+  await h.scheduled();
+  assert.equal(h.db.row('SELECT COUNT(*) AS n FROM animations WHERE search_text IS NULL').n, 0);
+  assert.equal(h.db.row('SELECT COUNT(*) AS n FROM users WHERE search_name IS NULL').n, 0);
+  assert.deepEqual(await search('animacao'), [accented]);
+  assert.deepEqual(await search('estudio'), [theirs]);
+});
+
 test('downloads count once per viewer per day; the uploader does not count', async () => {
   const h = createHarness();
   const sign = await oidcSigner(h);

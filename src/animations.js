@@ -4,6 +4,7 @@ import { currentUser, isModerator, requireUser } from './auth.js';
 import { DRAFT_TTL_MS, LICENSES, LIMITS, RATE } from './config.js';
 import { fail, json, readJson } from './lib/http.js';
 import { clientIp, rateLimit } from './lib/ratelimit.js';
+import { animationSearchText, containsPattern, foldText } from './lib/search.js';
 import { requireTurnstile } from './lib/turnstile.js';
 import { cleanTags, cleanText, decodeCursor, encodeCursor, newId, randomToken, requireId, SHA256_RE, sha256Hex, utcDay } from './lib/util.js';
 import { queueJob } from './pipeline.js';
@@ -97,11 +98,11 @@ export async function createDraft(c) {
 
   const id = newId();
   await c.env.DB.prepare(
-    `INSERT INTO animations (id, owner_id, title, description, tags, license, credits, remix_of, status, sha256, size_bytes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+    `INSERT INTO animations (id, owner_id, title, description, tags, license, credits, remix_of, status, sha256, size_bytes, created_at, updated_at, search_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
   )
     .bind(id, user.id, fields.title, fields.description, JSON.stringify(fields.tags), fields.license, JSON.stringify(fields.credits),
-      remixOf, sha256, size, c.now, c.now)
+      remixOf, sha256, size, c.now, c.now, animationSearchText(fields))
     .run();
   return json({ id, upload_url: new URL(`/v1/animations/${id}/file`, c.env.PUBLIC_URL).href, expires_at: c.now + DRAFT_TTL_MS }, 201);
 }
@@ -152,10 +153,6 @@ const FEEDS = {
   featured: { order: 'a.featured_at DESC, a.id DESC', keys: ['featured_at', 'id'], cmp: '(a.featured_at, a.id) < (?, ?)' },
 };
 
-function likePattern(text) {
-  return `%${text.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
-}
-
 // GET /v1/animations?feed=new|top|trending|following&tag=&res=1080x2400&q=&cursor=&limit=
 export async function list(c) {
   const params = c.url.searchParams;
@@ -187,10 +184,21 @@ export async function list(c) {
     where.push('a.width = ? AND a.height = ?');
     binds.push(Number(match[1]), Number(match[2]));
   }
-  const q = (params.get('q') || '').trim().slice(0, 60);
+  // Search: title, description, tags and the author's @handle / name; no accents, any case, any part of a word.
+  // "@name" searches authors only. Rows written before the search text existed fall back to title/tags/handle.
+  const raw = (params.get('q') || '').trim().slice(0, 60);
+  const authorOnly = raw.startsWith('@');
+  const q = foldText(authorOnly ? raw.slice(1) : raw);
   if (q) {
-    where.push("(a.title LIKE ? ESCAPE '\\' OR a.tags LIKE ? ESCAPE '\\')");
-    binds.push(likePattern(q), likePattern(q.toLowerCase()));
+    const pattern = containsPattern(q);
+    const byAuthor = "(o.search_name LIKE ? ESCAPE '\\' OR (o.search_name IS NULL AND o.handle LIKE ? ESCAPE '\\'))";
+    if (authorOnly) {
+      where.push(byAuthor);
+      binds.push(pattern, pattern);
+    } else {
+      where.push(`(a.search_text LIKE ? ESCAPE '\\' OR (a.search_text IS NULL AND (a.title LIKE ? ESCAPE '\\' OR a.tags LIKE ? ESCAPE '\\')) OR ${byAuthor})`);
+      binds.push(pattern, pattern, pattern, pattern, pattern);
+    }
   }
   const cursor = decodeCursor(params.get('cursor'), 2);
   if (cursor) {
@@ -282,8 +290,8 @@ export async function update(c) {
   const body = await readJson(c.request, LIMITS.jsonBodyBytes);
   const fields = animationFields(body, row);
   await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE animations SET title = ?, description = ?, tags = ?, license = ?, credits = ?, updated_at = ? WHERE id = ?')
-      .bind(fields.title, fields.description, JSON.stringify(fields.tags), fields.license, JSON.stringify(fields.credits), c.now, id),
+    c.env.DB.prepare('UPDATE animations SET title = ?, description = ?, tags = ?, license = ?, credits = ?, search_text = ?, updated_at = ? WHERE id = ?')
+      .bind(fields.title, fields.description, JSON.stringify(fields.tags), fields.license, JSON.stringify(fields.credits), animationSearchText(fields), c.now, id),
     ...tagStatements(c.env.DB, id, fields.tags),
   ]);
   // New text is checked again (same rules as on upload).
