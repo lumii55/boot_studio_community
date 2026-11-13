@@ -20,7 +20,9 @@
   "vars": {
     "PUBLIC_URL": "https://bas-community.bootanimstudio.workers.dev",
     "SITE_URL": "https://lumii55.github.io/boot_animation_studio/",
-    "ALLOWED_ORIGINS": "https://lumii55.github.io",
+    "ALLOWED_ORIGINS": "https://lumii55.github.io,http://localhost:8095",
+    // The owner's phone serves the site's redesign branch here while it is being built (Termux, localhost only).
+    "PREVIEW_SITE_URLS": "http://localhost:8095/",
     "OWNER_GITHUB_ID": "109257859",
     "OWNER_DISCORD_ID": "1442186243000500355",
     "MODERATION_REPO": "lumii55/boot_studio_community",

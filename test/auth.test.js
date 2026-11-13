@@ -119,3 +119,39 @@ test('no raw IP address is stored anywhere', async () => {
   const dump = JSON.stringify(h.db.rows('SELECT * FROM rate_windows')) + JSON.stringify(h.db.rows('SELECT * FROM download_marks'));
   assert.ok(!dump.includes('203.0.113.7'), dump);
 });
+
+test('sign-in from an allowed preview copy of the site returns there; other sites fall back to the public one', async () => {
+  const preview = 'http://localhost:8095/';
+  const h = createHarness({ env: { PREVIEW_SITE_URLS: preview } });
+  h.net.githubProfiles.set('p1', { id: 41, login: 'previewer', created_at: '2020-01-01T00:00:00Z' });
+  const start = await h.request('GET', `/v1/auth/github/start?return=%23community&site=${encodeURIComponent(preview)}`);
+  const state = new URL(start.headers.get('Location')).searchParams.get('state');
+  const done = await h.request('GET', `/v1/auth/github/callback?code=p1&state=${state}`);
+  const back = new URL(done.headers.get('Location'));
+  assert.equal(back.origin + back.pathname, 'http://localhost:8095/');
+  assert.ok(new URLSearchParams(back.hash.slice(1)).get('bas-auth'));
+
+  const denied = await h.request('GET', '/v1/auth/github/start?site=http%3A%2F%2Flocalhost%3A8095%2F');
+  const deniedState = new URL(denied.headers.get('Location')).searchParams.get('state');
+  const refused = await h.request('GET', `/v1/auth/github/callback?error=access_denied&state=${deniedState}`);
+  assert.equal(refused.headers.get('Location'), 'http://localhost:8095/#bas-auth-error=denied');
+
+  for (const other of ['https://evil.example/', 'http://localhost:9999/', 'http://localhost:8095/x']) {
+    const s = await h.request('GET', `/v1/auth/github/start?site=${encodeURIComponent(other)}`);
+    const st = new URL(s.headers.get('Location')).searchParams.get('state');
+    const r = await h.request('GET', `/v1/auth/github/callback?error=access_denied&state=${st}`);
+    assert.equal(r.headers.get('Location'), 'https://site.test/bas/#bas-auth-error=denied', other);
+  }
+  // Without PREVIEW_SITE_URLS no preview is accepted at all.
+  const plain = createHarness();
+  const s = await plain.request('GET', `/v1/auth/github/start?site=${encodeURIComponent(preview)}`);
+  assert.equal(plain.db.row('SELECT site_url FROM oauth_states').site_url, null);
+  assert.equal(s.status, 302);
+});
+
+test('the deployed configuration allows exactly the public site and the owner preview', async () => {
+  const { readFileSync } = await import('node:fs');
+  const config = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+  assert.match(config, /"ALLOWED_ORIGINS": "https:\/\/lumii55\.github\.io,http:\/\/localhost:8095"/);
+  assert.match(config, /"PREVIEW_SITE_URLS": "http:\/\/localhost:8095\/"/);
+});

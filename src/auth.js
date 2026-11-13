@@ -19,8 +19,14 @@ function callbackUrl(env) {
   return new URL('/v1/auth/github/callback', env.PUBLIC_URL).href;
 }
 
-function siteRedirect(env, fragment) {
-  const site = new URL(env.SITE_URL);
+// Preview copies of the site the owner tests on (exact URLs, comma separated). Anything else means the public site.
+function previewSite(env, requested) {
+  const allowed = String(env.PREVIEW_SITE_URLS || '').split(',').map((value) => value.trim()).filter(Boolean);
+  return requested && allowed.includes(requested) ? requested : null;
+}
+
+function siteRedirect(env, fragment, siteUrl = null) {
+  const site = new URL(previewSite(env, siteUrl) || env.SITE_URL);
   site.hash = fragment;
   return redirect(site.href);
 }
@@ -30,9 +36,10 @@ export async function startGithub(c) {
   if (!c.env.GH_OAUTH_CLIENT_ID) throw fail(503, 'not_configured', 'Sign-in is not configured');
   const requested = c.url.searchParams.get('return') || '#community';
   const returnTo = RETURN_RE.test(requested) ? requested : '#community';
+  const siteUrl = previewSite(c.env, c.url.searchParams.get('site'));
   const state = randomToken(24);
-  await c.env.DB.prepare('INSERT INTO oauth_states (state, return_to, expires_at) VALUES (?, ?, ?)')
-    .bind(state, returnTo, c.now + OAUTH_STATE_MINUTES * 60000)
+  await c.env.DB.prepare('INSERT INTO oauth_states (state, return_to, site_url, expires_at) VALUES (?, ?, ?, ?)')
+    .bind(state, returnTo, siteUrl, c.now + OAUTH_STATE_MINUTES * 60000)
     .run();
   const authorize = new URL('https://github.com/login/oauth/authorize');
   authorize.searchParams.set('client_id', c.env.GH_OAUTH_CLIENT_ID);
@@ -46,17 +53,18 @@ export async function githubCallback(c) {
   const state = c.url.searchParams.get('state') || '';
   const code = c.url.searchParams.get('code') || '';
   const saved = state
-    ? await c.env.DB.prepare('DELETE FROM oauth_states WHERE state = ? RETURNING return_to, expires_at').bind(state).first()
+    ? await c.env.DB.prepare('DELETE FROM oauth_states WHERE state = ? RETURNING return_to, site_url, expires_at').bind(state).first()
     : null;
-  if (!saved || saved.expires_at < c.now) return siteRedirect(c.env, 'bas-auth-error=expired');
-  if (c.url.searchParams.get('error') || !code) return siteRedirect(c.env, 'bas-auth-error=denied');
+  if (!saved || saved.expires_at < c.now) return siteRedirect(c.env, 'bas-auth-error=expired', saved && saved.site_url);
+  const back = saved.site_url;
+  if (c.url.searchParams.get('error') || !code) return siteRedirect(c.env, 'bas-auth-error=denied', back);
 
   let profile;
   try {
     profile = await fetchGithubProfile(c.env, code);
   } catch (err) {
     console.error('github sign-in failed', err && err.message);
-    return siteRedirect(c.env, 'bas-auth-error=github');
+    return siteRedirect(c.env, 'bas-auth-error=github', back);
   }
 
   const user = await upsertUser(c, profile);
@@ -66,9 +74,9 @@ export async function githubCallback(c) {
     .run();
   // A banned or suspended person gets no session; the one-time code only reads why (POST /v1/auth/exchange answers
   // 403 account_restricted with the punishment, its reason, how long and the contact to contest it).
-  if (user.status === 'banned') return siteRedirect(c.env, `bas-auth-error=banned&notice=${grant}`);
-  if (isSuspended(user, c.now)) return siteRedirect(c.env, `bas-auth-error=suspended&until=${user.suspended_until}&notice=${grant}`);
-  return siteRedirect(c.env, `bas-auth=${grant}&to=${encodeURIComponent(saved.return_to)}`);
+  if (user.status === 'banned') return siteRedirect(c.env, `bas-auth-error=banned&notice=${grant}`, back);
+  if (isSuspended(user, c.now)) return siteRedirect(c.env, `bas-auth-error=suspended&until=${user.suspended_until}&notice=${grant}`, back);
+  return siteRedirect(c.env, `bas-auth=${grant}&to=${encodeURIComponent(saved.return_to)}`, back);
 }
 
 async function fetchGithubProfile(env, code) {
