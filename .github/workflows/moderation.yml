@@ -48,10 +48,26 @@ jobs:
         with:
           path: ~/venv
           key: ${{ steps.venv.outputs.cache-primary-key }}
-      - uses: actions/cache@v4
+      # The image models are kept already prepared (~330 MB: image half of CLIP + nudity model in float16, label
+      # embeddings computed in advance). Any change to vision.py (models, labels) or the packages makes a new key.
+      - name: Restore prepared models
+        id: models
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/huggingface
-          key: vision-clip-3d74acf9-nsfw-96cb0d03
+          path: ~/.cache/bas-vision
+          key: bas-vision-torch${{ env.TORCH_VERSION }}-${{ hashFiles('pipeline/vision.py', 'pipeline/requirements-vision.txt') }}
+      # Never stops the run: if preparing fails, the check below still reports (a person reviews the images).
+      - name: Prepare models (only when not kept)
+        id: prepare
+        if: steps.models.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: ~/venv/bin/python -I pipeline/vision.py --prepare
+      - name: Keep prepared models
+        if: steps.models.outputs.cache-hit != 'true' && steps.prepare.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bas-vision
+          key: ${{ steps.models.outputs.cache-primary-key }}
       - name: Run checks
         env:
           JOB_ID: ${{ inputs.job_id }}

@@ -54,6 +54,39 @@ class Policy(unittest.TestCase):
         self.assertEqual((findings, detected), ([], {}))
 
 
+class PreparedFolder(unittest.TestCase):
+    """The kept model folder is only reused when it was built from exactly these models, labels and format."""
+
+    def test_manifest_must_match(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            self.assertFalse(vision.is_prepared(folder))
+            (folder / "manifest.json").write_text("not json", "utf-8")
+            self.assertFalse(vision.is_prepared(folder))
+            (folder / "manifest.json").write_text(json.dumps(vision.manifest()), "utf-8")
+            self.assertTrue(vision.is_prepared(folder))
+            for change in ({"labels": {"unsafe": vision.UNSAFE_LABELS[:-1], "logo": vision.LOGO_LABELS}},
+                           {"clip": [vision.MODEL_ID, "other"]}, {"format": vision.PREPARED_FORMAT + 1}):
+                (folder / "manifest.json").write_text(json.dumps(vision.manifest() | change), "utf-8")
+                self.assertFalse(vision.is_prepared(folder), change)
+
+    def test_labels_cover_every_group(self):
+        for labels in vision.UNSAFE.values():
+            self.assertTrue(set(labels) <= set(vision.UNSAFE_LABELS))
+        self.assertEqual(len(vision.LOGO_LABELS), len(set(vision.LOGO_LABELS)))
+        self.assertEqual(len(vision.UNSAFE_LABELS), len(set(vision.UNSAFE_LABELS)))
+
+    def test_workflow_keeps_the_prepared_folder_keyed_by_this_file(self):
+        workflow = (Path(__file__).resolve().parent.parent / ".github/workflows/moderation.yml").read_text("utf-8")
+        self.assertIn("path: ~/.cache/bas-vision", workflow)
+        self.assertIn("hashFiles('pipeline/vision.py'", workflow)
+        self.assertIn("pipeline/vision.py --prepare", workflow)
+        self.assertIn("continue-on-error: true", workflow)  # a failed download must not stop the report
+        self.assertNotIn("~/.cache/huggingface", workflow)
+
+
 @unittest.skipUnless(os.environ.get("BAS_VISION_MODEL") == "1", "set BAS_VISION_MODEL=1 to run the real model")
 class RealModel(unittest.TestCase):
     @classmethod
